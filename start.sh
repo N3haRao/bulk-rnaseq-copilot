@@ -55,9 +55,9 @@ else
   echo "Assistant: Ollama is not running; the site will use its built-in rules. (Start it with: brew services start ollama)"
 fi
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "Chat: Anthropic API key found (model ${CHAT_MODEL:-claude-opus-5-5})."
+  echo "Chat: using ANTHROPIC_API_KEY from .env (model ${CHAT_MODEL:-claude-opus-5-5})."
 else
-  echo "Chat: no ANTHROPIC_API_KEY in .env; the Ask (chat) tab will explain how to add one."
+  echo "Chat: add or check the Anthropic API key on the Settings page."
 fi
 echo "Open http://localhost:$PORT in your browser. Stop with Ctrl+C."
 cd backend && exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port "$PORT"

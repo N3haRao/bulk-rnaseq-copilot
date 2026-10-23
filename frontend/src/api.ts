@@ -272,6 +272,15 @@ export type ChatEvent =
   | { type: "error"; text: string }
   | { type: "done" };
 
+export interface KeyStatus {
+  configured: boolean;
+  source: "environment" | "keychain" | "file" | null;
+  masked: string | null;
+  model: string;
+  can_change: boolean;
+  storage: string | null;
+}
+
 export class ApiError extends Error {}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -315,6 +324,11 @@ export const api = {
     request<AgentSetup>(`/api/uploads/${id}/agent/setup` + (condition ? `?condition=${encodeURIComponent(condition)}` : ""),
       { method: "POST" }),
   agentExplainCheck: (id: string) => request<AgentExplain>(`/api/uploads/${id}/agent/explain-check`, { method: "POST" }),
+  settings: () => request<{ anthropic: KeyStatus }>("/api/settings"),
+  saveKey: (key: string) => request<{ anthropic: KeyStatus; message: string }>("/api/settings/anthropic-key", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }),
+  }),
+  deleteKey: () => request<{ anthropic: KeyStatus }>("/api/settings/anthropic-key", { method: "DELETE" }),
   chatStatus: () => request<{ configured: boolean; model: string; detail: string }>("/api/chat/status"),
   chats: (jobId: string) => request<{ id: string; created: string; title: string | null }[]>(`/api/runs/${jobId}/chats`),
   newChat: (jobId: string) => request<{ id: string; transcript: ChatItem[] }>(`/api/runs/${jobId}/chats`, { method: "POST" }),

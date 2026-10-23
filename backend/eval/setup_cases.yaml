@@ -1,0 +1,339 @@
+# Benchmark for the executor agent's setup proposal.
+#
+# Each case is a sample table (first column = sample IDs) and the setup a
+# careful bioinformatician would choose. Where more than one answer is
+# acceptable, list the alternatives:
+#   test_level: [a, b]              any of these
+#   covariates: [[x], [x, y]]       any of these sets (order does not matter)
+# `condition` may be given in `user_condition` to test proposals after the
+# user has picked the column.
+#
+# Add a case whenever the site gets a setup wrong during the trial.
+
+cases:
+  - name: airway (paired donors, dexamethasone)
+    table: |
+      sample_id,condition,cell_line,run
+      SRR1039508,control,N61311,SRR1039508
+      SRR1039509,dexamethasone,N61311,SRR1039509
+      SRR1039512,control,N052611,SRR1039512
+      SRR1039513,dexamethasone,N052611,SRR1039513
+      SRR1039516,control,N080611,SRR1039516
+      SRR1039517,dexamethasone,N080611,SRR1039517
+      SRR1039520,control,N061011,SRR1039520
+      SRR1039521,dexamethasone,N061011,SRR1039521
+    expect: {condition: condition, reference_level: control, test_level: dexamethasone, covariates: [[cell_line]]}
+
+  - name: pasilla (library type as technical covariate)
+    table: |
+      sample_id,condition,type
+      treated1,treated,single-read
+      treated2,treated,paired-end
+      treated3,treated,paired-end
+      untreated1,untreated,single-read
+      untreated2,untreated,single-read
+      untreated3,untreated,paired-end
+      untreated4,untreated,paired-end
+    expect: {condition: condition, reference_level: untreated, test_level: treated, covariates: [[type]]}
+
+  - name: GSE60450 (no control name; lane confounded)
+    table: |
+      sample_id,cell_type,status,lane
+      MCL1-DG,basal,virgin,L002
+      MCL1-DH,basal,virgin,L002
+      MCL1-DI,basal,pregnant,L002
+      MCL1-DJ,basal,pregnant,L002
+      MCL1-DK,basal,lactating,L002
+      MCL1-DL,basal,lactating,L002
+      MCL1-LA,luminal,virgin,L001
+      MCL1-LB,luminal,virgin,L001
+      MCL1-LC,luminal,pregnant,L001
+      MCL1-LD,luminal,pregnant,L001
+      MCL1-LE,luminal,lactating,L001
+      MCL1-LF,luminal,lactating,L001
+    expect: {condition: cell_type, reference_level: [basal, luminal], test_level: [luminal, basal], covariates: [[status]]}
+
+  - name: knockout vs wild type with sex
+    table: |
+      mouse,genotype,sex,age_weeks
+      m1,WT,M,8
+      m2,WT,F,8
+      m3,WT,M,9
+      m4,WT,F,8
+      m5,Gfap_KO,M,8
+      m6,Gfap_KO,F,9
+      m7,Gfap_KO,M,8
+      m8,Gfap_KO,F,8
+    expect: {condition: genotype, reference_level: WT, test_level: Gfap_KO, covariates: [[sex], [sex, age_weeks]]}
+
+  - name: siRNA knock-down (siCtrl)
+    table: |
+      sample,siRNA,replicate_batch
+      s1,siCtrl,B1
+      s2,siCtrl,B2
+      s3,siCtrl,B3
+      s4,siTP53,B1
+      s5,siTP53,B2
+      s6,siTP53,B3
+    expect: {condition: siRNA, reference_level: siCtrl, test_level: siTP53, covariates: [[replicate_batch]]}
+
+  - name: shRNA non-targeting control
+    table: |
+      id,shRNA,batch
+      a,shNT,1
+      b,shNT,1
+      c,shNT,2
+      d,shMYC,1
+      e,shMYC,2
+      f,shMYC,2
+    expect: {condition: shRNA, reference_level: shNT, test_level: shMYC, covariates: [[batch]]}
+
+  - name: disease vs healthy patients with batch
+    table: |
+      patient,diagnosis,sex,batch
+      P01,healthy,F,b1
+      P02,healthy,M,b1
+      P03,healthy,F,b2
+      P04,healthy,M,b2
+      P05,IBD,F,b1
+      P06,IBD,M,b1
+      P07,IBD,F,b2
+      P08,IBD,M,b2
+    expect: {condition: diagnosis, reference_level: healthy, test_level: IBD, covariates: [[batch, sex], [batch]]}
+
+  - name: vehicle vs drug, DMSO naming
+    table: |
+      sample,treatment,plate
+      w1,DMSO,p1
+      w2,DMSO,p2
+      w3,DMSO,p3
+      w4,compound_17,p1
+      w5,compound_17,p2
+      w6,compound_17,p3
+    expect: {condition: treatment, reference_level: DMSO, test_level: compound_17, covariates: [[plate]]}
+
+  - name: dose series (vehicle, low, high)
+    table: |
+      sample,dose,batch
+      a,vehicle,1
+      b,vehicle,2
+      c,vehicle,3
+      d,low,1
+      e,low,2
+      f,low,3
+      g,high,1
+      h,high,2
+      i,high,3
+    expect: {condition: dose, reference_level: vehicle, test_level: [high, low], covariates: [[batch]]}
+
+  - name: time course reduced to day 0 vs day 7
+    table: |
+      sample,timepoint,donor
+      d1_t0,day0,D1
+      d2_t0,day0,D2
+      d3_t0,day0,D3
+      d1_t7,day7,D1
+      d2_t7,day7,D2
+      d3_t7,day7,D3
+    expect: {condition: timepoint, reference_level: day0, test_level: day7, covariates: [[donor]]}
+
+  - name: infection vs mock
+    table: |
+      id,infection,hpi
+      i1,mock,24
+      i2,mock,24
+      i3,mock,24
+      i4,SARS-CoV-2,24
+      i5,SARS-CoV-2,24
+      i6,SARS-CoV-2,24
+    expect: {condition: infection, reference_level: mock, test_level: SARS-CoV-2, covariates: [[]]}
+
+  - name: condition column not named like one (group)
+    table: |
+      library,group,file
+      L1,A,L1.fastq.gz
+      L2,A,L2.fastq.gz
+      L3,A,L3.fastq.gz
+      L4,B,L4.fastq.gz
+      L5,B,L5.fastq.gz
+      L6,B,L6.fastq.gz
+    expect: {condition: group, reference_level: [A, B], test_level: [B, A], covariates: [[]]}
+
+  - name: tumour vs normal, paired patients
+    table: |
+      sample,tissue,patient
+      T1,tumor,pt1
+      N1,normal,pt1
+      T2,tumor,pt2
+      N2,normal,pt2
+      T3,tumor,pt3
+      N3,normal,pt3
+      T4,tumor,pt4
+      N4,normal,pt4
+    expect: {condition: tissue, reference_level: normal, test_level: tumor, covariates: [[patient]]}
+
+  - name: batch confounded with treatment (must not adjust)
+    table: |
+      sample,treatment,sequencing_batch
+      s1,control,run1
+      s2,control,run1
+      s3,control,run1
+      s4,treated,run2
+      s5,treated,run2
+      s6,treated,run2
+    expect: {condition: treatment, reference_level: control, test_level: treated, covariates: [[]]}
+
+  - name: description column restating the group
+    table: |
+      sample,genotype,description
+      a,WT,wild type liver
+      b,WT,wild type liver
+      c,WT,wild type liver
+      d,Ppara_null,Ppara knockout liver
+      e,Ppara_null,Ppara knockout liver
+      f,Ppara_null,Ppara knockout liver
+    expect: {condition: genotype, reference_level: WT, test_level: Ppara_null, covariates: [[]]}
+
+  - name: two candidate group columns, diet is the experiment
+    table: |
+      mouse,diet,cage,sex
+      1,chow,c1,M
+      2,chow,c1,M
+      3,chow,c2,M
+      4,chow,c2,M
+      5,high_fat,c3,M
+      6,high_fat,c3,M
+      7,high_fat,c4,M
+      8,high_fat,c4,M
+    expect: {condition: diet, reference_level: chow, test_level: high_fat, covariates: [[]]}
+
+  - name: stimulated vs unstimulated with donor and sex
+    table: |
+      sample,stimulation,donor,sex
+      s1,unstim,d1,F
+      s2,LPS,d1,F
+      s3,unstim,d2,M
+      s4,LPS,d2,M
+      s5,unstim,d3,F
+      s6,LPS,d3,F
+      s7,unstim,d4,M
+      s8,LPS,d4,M
+    expect: {condition: stimulation, reference_level: unstim, test_level: LPS, covariates: [[donor]]}
+
+  - name: numeric covariate (RIN) present
+    table: |
+      sample,condition,RIN
+      a,ctrl,8.1
+      b,ctrl,7.4
+      c,ctrl,9.0
+      d,ctrl,8.8
+      e,ko,7.9
+      f,ko,8.5
+      g,ko,6.9
+      h,ko,9.2
+    expect: {condition: condition, reference_level: ctrl, test_level: ko, covariates: [[], [RIN]]}
+
+  - name: user already chose the column (status in GSE60450)
+    user_condition: status
+    table: |
+      sample_id,cell_type,status
+      MCL1-DG,basal,virgin
+      MCL1-DH,basal,virgin
+      MCL1-DI,basal,pregnant
+      MCL1-DJ,basal,pregnant
+      MCL1-LA,luminal,virgin
+      MCL1-LB,luminal,virgin
+      MCL1-LC,luminal,pregnant
+      MCL1-LD,luminal,pregnant
+    expect: {condition: status, reference_level: virgin, test_level: pregnant, covariates: [[cell_type]]}
+
+  - name: sham surgery control
+    table: |
+      rat,surgery,litter
+      r1,sham,L1
+      r2,sham,L2
+      r3,sham,L3
+      r4,TBI,L1
+      r5,TBI,L2
+      r6,TBI,L3
+    expect: {condition: surgery, reference_level: sham, test_level: TBI, covariates: [[litter]]}
+
+  - name: wild type written out, mutant allele name
+    table: |
+      sample,strain,rep
+      y1,wild type,1
+      y2,wild type,2
+      y3,wild type,3
+      y4,snf2-delta,1
+      y5,snf2-delta,2
+      y6,snf2-delta,3
+    expect: {condition: strain, reference_level: wild type, test_level: snf2-delta, covariates: [[], [rep]]}
+
+  - name: overexpression vs empty vector
+    table: |
+      sample,construct,transfection_date
+      a,empty_vector,2024-03-01
+      b,empty_vector,2024-03-08
+      c,empty_vector,2024-03-15
+      d,SOX2_OE,2024-03-01
+      e,SOX2_OE,2024-03-08
+      f,SOX2_OE,2024-03-15
+    expect: {condition: construct, reference_level: empty_vector, test_level: SOX2_OE, covariates: [[transfection_date]]}
+
+  # ---- cases that need biological meaning, not name matching ----
+  - name: pre vs post treatment, paired patients
+    table: |
+      sample,visit,patient
+      p1_a,post,p1
+      p1_b,pre,p1
+      p2_a,post,p2
+      p2_b,pre,p2
+      p3_a,post,p3
+      p3_b,pre,p3
+    expect: {condition: visit, reference_level: pre, test_level: post, covariates: [[patient]]}
+
+  - name: normoxia vs hypoxia
+    table: |
+      sample,oxygen,batch
+      h1,hypoxia,A
+      h2,hypoxia,B
+      h3,hypoxia,C
+      n1,normoxia,A
+      n2,normoxia,B
+      n3,normoxia,C
+    expect: {condition: oxygen, reference_level: normoxia, test_level: hypoxia, covariates: [[batch]]}
+
+  - name: young vs aged mice
+    table: |
+      mouse,age_group,sex
+      m1,aged,F
+      m2,aged,M
+      m3,aged,F
+      m4,aged,M
+      m5,young,F
+      m6,young,M
+      m7,young,F
+      m8,young,M
+    expect: {condition: age_group, reference_level: young, test_level: aged, covariates: [[sex]]}
+
+  - name: GEO-style column names, scrambled control abbreviated
+    table: |
+      title,source_name_ch1,characteristics_ch1_knockdown,characteristics_ch1_replicate
+      HeLa_KD_1,HeLa,KD-YAP1,r1
+      HeLa_KD_2,HeLa,KD-YAP1,r2
+      HeLa_KD_3,HeLa,KD-YAP1,r3
+      HeLa_Scr_1,HeLa,Scr,r1
+      HeLa_Scr_2,HeLa,Scr,r2
+      HeLa_Scr_3,HeLa,Scr,r3
+    expect: {condition: characteristics_ch1_knockdown, reference_level: Scr, test_level: KD-YAP1, covariates: [[], [characteristics_ch1_replicate]]}
+
+  - name: wild type littermates vs heterozygous
+    table: |
+      animal,genotype,litter,sex
+      a1,Het,L1,M
+      a2,Het,L2,F
+      a3,Het,L3,M
+      a4,+/+,L1,F
+      a5,+/+,L2,M
+      a6,+/+,L3,F
+    expect: {condition: genotype, reference_level: "+/+", test_level: Het, covariates: [[litter], [litter, sex]]}

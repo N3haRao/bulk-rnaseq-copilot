@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, chatFileUrl, type ChatEvent, type ChatItem, type Job } from "../api";
 import { Notice } from "./common";
 
@@ -118,8 +118,8 @@ export default function ChatTab({ job }: { job: Job }) {
     return (
       <section className="card">
         <h2>Ask about this analysis</h2>
-        <Notice kind="warning">The chat needs an Anthropic API key. {status.detail}</Notice>
-        <pre className="code">{`# in the agentic-omics-testbed folder:\necho 'ANTHROPIC_API_KEY=sk-ant-...' > .env\n./start.sh`}</pre>
+        <Notice kind="warning">The chat needs an Anthropic API key.</Notice>
+        <Link className="button" to="/settings">Add a key in Settings</Link>
       </section>
     );
   }

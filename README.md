@@ -1,4 +1,4 @@
-# RNA-seq analysis site (agentic omics testbed)
+# RNA-seq analysis site 
 
 A no-code website where a wet-lab biologist uploads a raw counts table and a sample table and gets a standard bulk RNA-seq analysis: input checks, QC, PCA, DESeq2 differential expression, volcano/MA plots, heatmap, pathway enrichment and a report with a methods paragraph.
 
@@ -11,8 +11,8 @@ All analysis is done by the tested R scripts in the [rnaseq-codebank](https://gi
 You need R 4.3 or newer, Python 3.11 or newer, Node.js 20 or newer and git.
 
 ```bash
-git clone --recurse-submodules https://github.com/N3haRao/agentic-omics-testbed.git
-cd agentic-omics-testbed
+git clone --recurse-submodules https://github.com/N3haRao/bulk-rnaseq-copilot.git
+cd bulk-rnaseq-copilot
 
 # 1. R packages for the code bank (once, takes a while) and the example datasets
 cd codebank

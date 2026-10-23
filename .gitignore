@@ -1,0 +1,22 @@
+# Uploads and analysis runs (local data, not code)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+backend/eval/results/
+
+# Secrets (Anthropic API key) and local settings
+.env
+frontend/tsconfig.tsbuildinfo

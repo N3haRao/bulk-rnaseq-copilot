@@ -1,0 +1,3 @@
+[submodule "codebank"]
+	path = codebank
+	url = https://github.com/N3haRao/rnaseq-codebank

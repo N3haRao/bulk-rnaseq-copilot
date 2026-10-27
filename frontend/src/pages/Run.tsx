@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, fileUrl, type AgentWarnings, type Job, type ReportStatus, type Results } from "../api";
+import { api, codeZipUrl, fileUrl, type AgentWarnings, type Job, type ReportStatus, type Results } from "../api";
 import { Badge, Figures, Markdown, Notice, SourceTag, Stepper, Tabs } from "../components/common";
 import ChatTab from "../components/ChatTab";
 import DeTab from "../components/DeTab";
@@ -172,6 +172,7 @@ function Downloads({ jobId, results, report, busy, error, onRewrite }: {
             <a className="button" href={`/api/runs/${jobId}/report/html`} target="_blank" rel="noreferrer">Open report</a>
             <a className="button secondary" href={`/api/runs/${jobId}/report/pdf`}>Download PDF</a>
             <a className="button secondary" href={`/api/runs/${jobId}/report/html?download=true`}>Download HTML</a>
+            <a className="button secondary" href={`/api/runs/${jobId}/report/pptx`}>Download PowerPoint</a>
             <button className="link" onClick={onRewrite}>Rewrite</button>
             <span className="muted small">
               {report!.source === "model"
@@ -195,6 +196,15 @@ function Downloads({ jobId, results, report, busy, error, onRewrite }: {
         {results.report_available && (
           <a href={fileUrl(jobId, "07_report/report.html")} target="_blank" rel="noreferrer" className="small">Technical report (code bank)</a>
         )}
+      </div>
+      <div className="row" style={{ marginTop: 10 }}>
+        <strong>Code:</strong>
+        <a className="button secondary" href={codeZipUrl(jobId)}>All code used (.zip)</a>
+        <a className="button secondary" href={codeZipUrl(jobId, true)}>Code + input files (.zip)</a>
+        <span className="muted small">
+          For a paper's code availability / supplementary material: the code bank at the exact version used, every
+          setting, the software versions, a script that reruns the analysis, and any code the chat assistant ran.
+        </span>
       </div>
     </section>
   );

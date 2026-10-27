@@ -14,13 +14,14 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 
-from . import codebank, report, results, secrets_store, uploads
+from . import code_bundle, codebank, report, results, secrets_store, uploads
 from .config import settings
 from .jobs import jobs
 from .chat import model as chat_model
+from .agents.setup_chat import SetupChat
 from .chat.agent import Conversation
 from .llm import executor_llm
-from .params import AnalysisSettings, manifest_params, validate
+from .params import ADVANCED_PARAMS, AnalysisSettings, manifest_params, validate
 
 
 @asynccontextmanager
@@ -61,8 +62,7 @@ def health() -> dict:
 def options() -> dict:
     """Allowed values for settings, from the code bank manifest."""
     specs = manifest_params()
-    pick = ("organism", "padj_cutoff", "log2fc_cutoff", "lfc_shrinkage", "min_count", "run_enrichment",
-            "gene_set_collections", "n_label_volcano", "n_heatmap_genes")
+    pick = ("organism", *ADVANCED_PARAMS)
     defaults = codebank.defaults()
     return {"parameters": {k: {**specs[k], "default": defaults.get(k, specs[k].get("default"))}
                            for k in pick if k in specs},
@@ -153,6 +153,37 @@ def agent_explain_check(upload_id: str) -> dict:
         return uploads.agent_explain_check(upload_id)
     except KeyError:
         _not_found("Input check")
+
+
+# ---- Setup chat (open-weight model) -------------------------------------------------------------
+def _setup_chat(upload_id: str) -> SetupChat:
+    try:
+        return SetupChat(uploads.upload_dir(upload_id), uploads.record(upload_id))
+    except KeyError:
+        _not_found("Upload")
+
+
+class SetupMessage(BaseModel):
+    text: str = Field(default="", max_length=8000)
+    current: dict | None = None  # the setup card as the user left it
+
+
+@app.get("/api/uploads/{upload_id}/setup-chat")
+def get_setup_chat(upload_id: str) -> dict:
+    return _setup_chat(upload_id).state()
+
+
+@app.post("/api/uploads/{upload_id}/setup-chat")
+def send_setup_chat(upload_id: str, body: SetupMessage) -> dict:
+    """The user's message; returns the conversation with the assistant's reply and the new setup."""
+    return _setup_chat(upload_id).send(body.text, body.current)
+
+
+@app.delete("/api/uploads/{upload_id}/setup-chat")
+def reset_setup_chat(upload_id: str) -> dict:
+    chat = _setup_chat(upload_id)
+    chat.path.unlink(missing_ok=True)
+    return chat.state()
 
 
 @app.post("/api/runs/{job_id}/agent/warnings")
@@ -287,6 +318,14 @@ def report_pdf(job_id: str):
     return FileResponse(p, media_type="application/pdf", filename=f"report_{job_id}.pdf")
 
 
+@app.get("/api/runs/{job_id}/report/pptx")
+def report_pptx(job_id: str):
+    run_dir = _run_dir_or_404(job_id)
+    p = report.pptx(jobs.load(job_id), jobs.job_dir(job_id), run_dir)
+    return FileResponse(p, filename=f"report_{job_id}.pptx",
+                        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+
+
 # ---- Settings (API key) -----------------------------------------------------------------------
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
 
@@ -416,6 +455,17 @@ def chat_file(job_id: str, conv_id: str, rel: str, download: bool = False):
                         content_disposition_type="attachment" if download else "inline")
 
 
+@app.get("/api/runs/{job_id}/code")
+def run_code(job_id: str, include_data: bool = False):
+    """All code that produced this run (code bank at its commit, settings, custom chat code) as a .zip."""
+    run_dir = _run_dir_or_404(job_id)
+    try:
+        z = code_bundle.build(jobs.load(job_id), jobs.job_dir(job_id), run_dir, include_data=include_data)
+    except code_bundle.BundleError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return FileResponse(z, filename=z.name, media_type="application/zip")
+
+
 @app.get("/api/runs/{job_id}/bundle")
 def run_bundle(job_id: str):
     run_dir = _run_dir_or_404(job_id)
@@ -435,3 +485,4 @@ if settings.frontend_dist.exists():
         if full_path and settings.frontend_dist in candidate.parents and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(settings.frontend_dist / "index.html")
+        

@@ -69,6 +69,14 @@ class Workspace:
     def rel(self, p: Path) -> str:
         return str(p.resolve().relative_to(self.root.resolve()))
 
+    def log_blocked(self, language: str, code: str, violations: list[dict]) -> None:
+        """Code the guardrails stopped is kept as a record, apart from the cells that ran."""
+        import json
+        from datetime import datetime, timezone
+        with open(self.root / "blocked_code.jsonl", "a") as f:
+            f.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "language": language,
+                                "code": code, "violations": violations}) + "\n")
+
     def output_files(self) -> dict[str, float]:
         return {self.rel(p): p.stat().st_mtime for p in self.outputs.rglob("*") if p.is_file()}
 
@@ -131,3 +139,4 @@ def _cut(text: str) -> str:
         return text
     half = MAX_OUTPUT_CHARS // 2
     return text[:half] + f"\n... [{len(text) - MAX_OUTPUT_CHARS} characters cut] ...\n" + text[-half:]
+    

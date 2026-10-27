@@ -171,6 +171,15 @@ def de_table(run_dir: Path, *, search: str = "", direction: str = "all", sort: s
             "rows": sel[start:start + page_size]}
 
 
+def sample_columns(run_dir: Path) -> list[str]:
+    """Columns of the run's validated sample table (for checking column settings)."""
+    p = run_dir / "01_validate_inputs" / "metadata_validated.csv"
+    if not p.exists():
+        return []
+    with open(p, newline="") as f:
+        return next(csv.reader(f), [])
+
+
 def gene_names(run_dir: Path) -> set[str]:
     """Every gene ID and symbol in the run's results table."""
     p = run_dir / "04_differential_expression" / "de_results_all.csv"
@@ -196,3 +205,4 @@ def bundle(run_dir: Path, dest_dir: Path) -> Path:
                                   base_dir=run_dir.name)
         Path(tmp).replace(target)
     return target
+    

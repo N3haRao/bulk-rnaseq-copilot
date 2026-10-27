@@ -4,7 +4,7 @@ A no-code website where a wet-lab biologist uploads a raw counts table and a sam
 
 All analysis is done by the tested R scripts in the [rnaseq-codebank](https://github.com/N3haRao/rnaseq-codebank), included here as the `codebank/` git submodule. The website never writes analysis code; it fills in the code bank's documented parameters and runs it. See [PLAN.md](PLAN.md) for the full plan (agents come in Phases 2-4).
 
-**Status: Phase 5** (feedback from the demo with Dr. Hari): the opening page is now a chat with the open-weight setup assistant, both assistants are held to the code bank's methods by code, every run has a code .zip for papers, and the report can be downloaded as PowerPoint. See "Phase 5" below. Earlier: Phase 4 (chat assistant). Phase 4 adds the **Ask (chat)** tab: Claude, through the Anthropic API, answers questions about a run, writes and runs its own Python or R code for custom plots, tables, statistics and slides, and proposes reruns of the tested pipeline. Phase 3 added a downloadable report (HTML and PDF) whose narrative is written by the same local model and checked sentence by sentence against the results. Before that, Phase 2 added the executor agent. Phase 1 gave the website: upload or example, automatic file check, guided setup, background runs with live progress, results tabs and downloads. Phase 2 adds an open-weight assistant (Qwen3-8B through Ollama, on the same laptop) that reads the sample table and proposes the setup, explains file problems with how to fix them, and explains run warnings. Without the assistant everything still works with built-in rules. Trial use with public data only.
+**Status: Phase 5** (feedback from the demo on 10/27): the opening page is now a chat with the open-weight setup assistant, both assistants are held to the code bank's methods by code, every run has a code .zip for papers, and the report can be downloaded as PowerPoint. See "Phase 5" below. Earlier: Phase 4 (chat assistant). Phase 4 adds the **Ask (chat)** tab: Claude, through the Anthropic API, answers questions about a run, writes and runs its own Python or R code for custom plots, tables, statistics and slides, and proposes reruns of the tested pipeline. Phase 3 added a downloadable report (HTML and PDF) whose narrative is written by the same local model and checked sentence by sentence against the results. Before that, Phase 2 added the executor agent. Phase 1 gave the website: upload or example, automatic file check, guided setup, background runs with live progress, results tabs and downloads. Phase 2 adds an open-weight assistant (Qwen3-8B through Ollama, on the same laptop) that reads the sample table and proposes the setup, explains file problems with how to fix them, and explains run warnings. Without the assistant everything still works with built-in rules. Trial use with public data only.
 
 ## Setting up on a laptop (macOS or Linux)
 
@@ -80,7 +80,7 @@ How it works:
 - **Guardrails for both chats** (`backend/app/guardrails.py`). The methods come from the code bank's manifest (`methods.allowed` / `methods.not_allowed`, code bank v0.2.0; older code banks use a built-in copy). Requests for another method (edgeR, limma/voom, per-gene t-tests, ComBat, clusterProfiler/Enrichr/GSVA, ...) get a fixed answer. Code the Claude chat writes is scanned before it runs: other methods, or installing packages, are blocked and logged in `blocked_code.jsonl`. Claude may still write its own code for plots, tables, slides and analyses that use the code bank's methods (e.g. another contrast from `dds.rds`). Reruns accept only code bank parameters.
 - **Code .zip for every run** ("All code used (.zip)" on the run page, `GET /api/runs/<id>/code`). It contains the code bank at the exact commit the run used (`git archive`), `analysis/run_config.yaml` with every parameter, `run_analysis.sh`, R and package versions, input checksums (the input files themselves only with "Code + input files"), how the setup was chosen (with the setup conversation), and every script the chat assistant ran, with `reproduce.sh`. It is ready to attach as supplementary material.
 - **PowerPoint report** ("Download PowerPoint", `GET /api/runs/<id>/report/pptx`). An 11-slide 16:9 deck with the same checked narrative, figures and tables as the HTML/PDF report.
-- **Plot options** (code bank v0.2.0): `plot_palette`, `group_colours`, `up_colour` / `down_colour`, `volcano_label_genes`, `pca_colour_by`, `pca_shape_by`, `pca_label_samples`. They change only how the figures look. The site offers them once the code bank submodule is at v0.2.0.
+- **Plot options** (code bank v0.2.0): `plot_palette`, `group_colours`, `up_colour` / `down_colour`, `volcano_label_genes`, `pca_colour_by`, `pca_shape_by`, `pca_label_samples`. They change only how the figures look.
 - Next: containers (Docker / Apptainer) for the Ada server, then SkyRiver.
 
 ### Measuring the assistant
@@ -155,6 +155,6 @@ codebank/             git submodule: rnaseq-codebank
 The submodule is pinned to one code-bank commit, which every run records in its provenance. After a new code-bank release:
 
 ```bash
-cd codebank && git fetch --tags && git checkout v0.1.1 && cd ..
-git add codebank && git commit -m "Use code bank v0.1.1"
+cd codebank && git fetch --tags && git checkout v0.2.1 && cd ..
+git add codebank && git commit -m "Use code bank v0.2.1"
 ```

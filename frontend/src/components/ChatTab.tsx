@@ -139,8 +139,9 @@ export default function ChatTab({ job }: { job: Job }) {
       </div>
       <p className="muted small" style={{ margin: "6px 0 0" }}>
         Answers come from Claude through the Anthropic API, so this run's results are sent to Anthropic: use public data
-        during the trial. Results the assistant computes itself are marked as custom analyses; the tested pipeline's
-        results are in the other tabs.
+        during the trial. The assistant uses only the code bank's methods (DESeq2, fgsea); code with any other method is
+        blocked before it runs. Results it computes itself are marked as custom analyses, and its code goes into the
+        run's code download.
       </p>
 
       <div className="chat-log">
@@ -177,7 +178,7 @@ function Item({ item, jobId, convId, onRerun }: {
   }
   // a tool call
   const files = item.files ?? [];
-  const icon = item.pending ? <span className="spinner" /> : item.error || item.ok === false ? "✗" : "✓";
+  const icon = item.pending ? <span className="spinner" /> : item.blocked ? "⛔" : item.error || item.ok === false ? "✗" : "✓";
   return (
     <div className="msg tool">
       {(item.code || item.output) && !item.pending ? (
@@ -216,6 +217,7 @@ function Item({ item, jobId, convId, onRerun }: {
 }
 
 function label(item: ChatItem): string {
+  if (item.blocked) return `Not run (not a code-bank method): ${item.title}`;
   const lang = item.language === "python" ? "Ran Python" : item.language === "r" ? "Ran R" : null;
   return lang ? `${lang}: ${item.title}` : item.title ?? item.name ?? "";
 }

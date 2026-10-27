@@ -242,9 +242,33 @@ export interface ReportStatus {
 }
 
 export interface SetupOrigin {
-  source: "model" | "rules" | "example" | "chat";
+  source: "model" | "rules" | "example" | "chat" | "setup_chat"; // chat = a rerun proposed in the Claude chat
   model: string | null;
   changed_by_user: boolean;
+  setup_chat?: string; // id of the setup conversation that proposed it
+}
+
+// ---- Setup chat (open-weight model) ----
+export interface SetupChatItem {
+  role: "user" | "assistant";
+  text: string;
+  at?: string;
+  setup?: Settings;
+  changes?: string[];
+  questions?: string[];
+  source?: "model" | "rules";
+  model?: string | null;
+  problems?: string[];
+  guardrail?: { name: string; matched: string; instead: string; message: string }[];
+  fallback_reason?: string;
+}
+
+export interface SetupChatState {
+  id: string;
+  transcript: SetupChatItem[];
+  setup: Settings;
+  source: "model" | "rules";
+  model: string | null;
 }
 
 // ---- Chat (interpreter agent) ----
@@ -260,6 +284,7 @@ export interface ChatItem {
   ok?: boolean;
   error?: boolean;
   files?: string[];
+  blocked?: boolean; // stopped by the guardrails (not a code-bank method), never ran
   rerun?: { settings: Settings; changes: Record<string, unknown>; reason: string; upload_id: string };
   pending?: boolean;
 }
@@ -319,6 +344,10 @@ export const api = {
   check: (id: string, s: Settings) => request<CheckResult>(`/api/uploads/${id}/check`, json(s)),
   startRun: (uploadId: string, s: Settings, origin?: SetupOrigin) =>
     request<Job>("/api/runs", json({ upload_id: uploadId, ...s, setup_origin: origin ?? null })),
+  setupChat: (id: string) => request<SetupChatState>(`/api/uploads/${id}/setup-chat`),
+  sendSetupChat: (id: string, text: string, current?: Settings) =>
+    request<SetupChatState>(`/api/uploads/${id}/setup-chat`, json({ text, current: current ?? null })),
+  resetSetupChat: (id: string) => request<SetupChatState>(`/api/uploads/${id}/setup-chat`, { method: "DELETE" }),
   agentStatus: () => request<{ available: boolean; model: string; detail: string }>("/api/agent/status"),
   agentSetup: (id: string, condition?: string) =>
     request<AgentSetup>(`/api/uploads/${id}/agent/setup` + (condition ? `?condition=${encodeURIComponent(condition)}` : ""),
@@ -368,7 +397,7 @@ export const api = {
   enrichment: (id: string, folder: string, kind: string) =>
     request<{ rows: Record<string, string>[]; figure: string | null }>(`/api/runs/${id}/enrichment/${folder}/${kind}`),
   options: () =>
-    request<{ parameters: Record<string, { type: string; values?: string[]; default: unknown }> }>("/api/options"),
+    request<{ parameters: Record<string, { type: string; values?: string[]; default: unknown; description?: string }> }>("/api/options"),
 };
 
 export const chatFileUrl = (jobId: string, convId: string, path: string, download = false) =>
@@ -376,3 +405,6 @@ export const chatFileUrl = (jobId: string, convId: string, path: string, downloa
 
 export const fileUrl = (jobId: string, path: string, download = false) =>
   `/api/runs/${jobId}/files/${path}` + (download ? "?download=true" : "");
+
+export const codeZipUrl = (jobId: string, includeData = false) =>
+  `/api/runs/${jobId}/code` + (includeData ? "?include_data=true" : "");

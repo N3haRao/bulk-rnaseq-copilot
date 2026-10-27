@@ -113,6 +113,14 @@ def test_upload_check_run_results(client):
     assert rep["available"] and rep["source"] == "rules" and "drug" in rep["summary"]
     page = client.get(f"/api/runs/{job['id']}/report/html")
     assert page.status_code == 200 and "Differential expression" in page.text and "data:image/png;base64" in page.text
+    deck = client.get(f"/api/runs/{job['id']}/report/pptx")
+    assert deck.status_code == 200 and deck.content[:2] == b"PK"
+    code = client.get(f"/api/runs/{job['id']}/code")
+    assert code.status_code == 200 and code.content[:2] == b"PK"
+    import zipfile
+    names = zipfile.ZipFile(io.BytesIO(code.content)).namelist()
+    assert any(n.endswith("codebank/scripts/04_differential_expression.R") for n in names)
+    assert any(n.endswith("analysis/run_config.yaml") for n in names)
     if os.environ.get("CHROMIUM_PATH") or os.environ.get("TEST_PDF"):
         pdf = client.get(f"/api/runs/{job['id']}/report/pdf")
         assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF"

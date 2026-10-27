@@ -1,18 +1,18 @@
-# RNA-seq analysis site 
+# RNA-seq analysis site (agentic omics testbed)
 
 A no-code website where a wet-lab biologist uploads a raw counts table and a sample table and gets a standard bulk RNA-seq analysis: input checks, QC, PCA, DESeq2 differential expression, volcano/MA plots, heatmap, pathway enrichment and a report with a methods paragraph.
 
 All analysis is done by the tested R scripts in the [rnaseq-codebank](https://github.com/N3haRao/rnaseq-codebank), included here as the `codebank/` git submodule. The website never writes analysis code; it fills in the code bank's documented parameters and runs it. See [PLAN.md](PLAN.md) for the full plan (agents come in Phases 2-4).
 
-**Status: Phase 4** (chat assistant). Phase 4 adds the **Ask (chat)** tab: Claude, through the Anthropic API, answers questions about a run, writes and runs its own Python or R code for custom plots, tables, statistics and slides, and proposes reruns of the tested pipeline. Phase 3 added a downloadable report (HTML and PDF) whose narrative is written by the same local model and checked sentence by sentence against the results. Before that, Phase 2 added the executor agent. Phase 1 gave the website: upload or example, automatic file check, guided setup, background runs with live progress, results tabs and downloads. Phase 2 adds an open-weight assistant (Qwen3-8B through Ollama, on the same laptop) that reads the sample table and proposes the setup, explains file problems with how to fix them, and explains run warnings. Without the assistant everything still works with built-in rules. Trial use with public data only.
+**Status: Phase 5** (feedback from the demo with Dr. Hari): the opening page is now a chat with the open-weight setup assistant, both assistants are held to the code bank's methods by code, every run has a code .zip for papers, and the report can be downloaded as PowerPoint. See "Phase 5" below. Earlier: Phase 4 (chat assistant). Phase 4 adds the **Ask (chat)** tab: Claude, through the Anthropic API, answers questions about a run, writes and runs its own Python or R code for custom plots, tables, statistics and slides, and proposes reruns of the tested pipeline. Phase 3 added a downloadable report (HTML and PDF) whose narrative is written by the same local model and checked sentence by sentence against the results. Before that, Phase 2 added the executor agent. Phase 1 gave the website: upload or example, automatic file check, guided setup, background runs with live progress, results tabs and downloads. Phase 2 adds an open-weight assistant (Qwen3-8B through Ollama, on the same laptop) that reads the sample table and proposes the setup, explains file problems with how to fix them, and explains run warnings. Without the assistant everything still works with built-in rules. Trial use with public data only.
 
 ## Setting up on a laptop (macOS or Linux)
 
 You need R 4.3 or newer, Python 3.11 or newer, Node.js 20 or newer and git.
 
 ```bash
-git clone --recurse-submodules https://github.com/N3haRao/bulk-rnaseq-copilot.git
-cd bulk-rnaseq-copilot
+git clone --recurse-submodules https://github.com/N3haRao/agentic-omics-testbed.git
+cd agentic-omics-testbed
 
 # 1. R packages for the code bank (once, takes a while) and the example datasets
 cd codebank
@@ -62,12 +62,9 @@ When a run finishes, the site writes a report automatically: open it, or downloa
 
 On a run's page, open **Ask (chat)**. Examples: "Is Krt5 lower in luminal cells?", "Make a volcano plot with only these 10 genes labelled", "Which pathways come up in the downregulated genes?", "What settings did you use?", "Make 5 slides for lab meeting", "Rerun with a stricter cutoff".
 
-Setup: create an API key at https://console.anthropic.com, then in this folder:
+Setup: create an API key at https://console.anthropic.com (ideally one used only for this site, with a monthly spending limit), open **Settings** in the site's top bar, paste the key and click **Check and save**. No restart needed.
 
-```bash
-cp .env.example .env        # then put your key in .env: ANTHROPIC_API_KEY=sk-ant-...
-./start.sh
-```
+The key is checked with Anthropic (a free model lookup), then stored in the operating system's keychain (macOS Keychain), or where there is none, in `data/secrets/` with permissions only the owner can read. The site never sends it back to the browser (only `sk-ant-…AbCd`), only requests from this computer and from the site's own pages may change it, and the assistant's code runs without it in its environment and without keychain access. A key in `.env` / `ANTHROPIC_API_KEY` still works and takes precedence (useful on a server). On the BCM server, the key will be an institutional setting managed by an administrator rather than something each user enters.
 
 How it works:
 - **Model:** Claude Opus 5.5 (`CHAT_MODEL` in `.env` to change), streamed, with prompt caching and the API's automatic fallback if a request is declined.
@@ -76,6 +73,15 @@ How it works:
 - **Reruns:** `propose_rerun` shows a card with the changed settings, checked against the code bank's manifest. The user starts the new run with one click, and the current run stays.
 - **Privacy:** questions, results and tool outputs are sent to the Anthropic API. Use public data during the trial.
 - Each conversation is saved under `data/jobs/<run>/chat/<conversation>/`: the full API messages, the transcript the user sees, and the workspace.
+
+### Phase 5: chat-first setup, guardrails, code .zip, PowerPoint
+
+- **Chat-first setup (open-weight).** The start page asks the user to describe the experiment in plain words and attach the counts and sample tables. On the next page the setup assistant (Qwen3 through Ollama, on this computer) replies with a complete setup card: comparison, control group, covariates, settings, and plot options. The user asks for changes in the chat ("also account for sex", "colour the PCA by batch", "label Krt5 on the volcano plot") or edits the card, then clicks **Approve and run**. Nothing runs before that. The model answers in a JSON schema built from the data and the code bank's manifest, so it can only name existing columns, groups and samples, and only set the code bank's parameters. Each setup is checked (confounded covariates, estimable design, valid values) and retried once if it fails. Reply text with numbers that are not in the data is replaced. Without Ollama, the built-in rules propose the setup. Code: `backend/app/agents/setup_chat.py`, prompt `agents/prompts/setup_chat.md`. Conversation: `data/uploads/<id>/setup_chat/main.json`.
+- **Guardrails for both chats** (`backend/app/guardrails.py`). The methods come from the code bank's manifest (`methods.allowed` / `methods.not_allowed`, code bank v0.2.0; older code banks use a built-in copy). Requests for another method (edgeR, limma/voom, per-gene t-tests, ComBat, clusterProfiler/Enrichr/GSVA, ...) get a fixed answer. Code the Claude chat writes is scanned before it runs: other methods, or installing packages, are blocked and logged in `blocked_code.jsonl`. Claude may still write its own code for plots, tables, slides and analyses that use the code bank's methods (e.g. another contrast from `dds.rds`). Reruns accept only code bank parameters.
+- **Code .zip for every run** ("All code used (.zip)" on the run page, `GET /api/runs/<id>/code`). It contains the code bank at the exact commit the run used (`git archive`), `analysis/run_config.yaml` with every parameter, `run_analysis.sh`, R and package versions, input checksums (the input files themselves only with "Code + input files"), how the setup was chosen (with the setup conversation), and every script the chat assistant ran, with `reproduce.sh`. It is ready to attach as supplementary material.
+- **PowerPoint report** ("Download PowerPoint", `GET /api/runs/<id>/report/pptx`). An 11-slide 16:9 deck with the same checked narrative, figures and tables as the HTML/PDF report.
+- **Plot options** (code bank v0.2.0): `plot_palette`, `group_colours`, `up_colour` / `down_colour`, `volcano_label_genes`, `pca_colour_by`, `pca_shape_by`, `pca_label_samples`. They change only how the figures look. The site offers them once the code bank submodule is at v0.2.0.
+- Next: containers (Docker / Apptainer) for the Ada server, then SkyRiver.
 
 ### Measuring the assistant
 

@@ -9,9 +9,22 @@ from pydantic import BaseModel, Field, field_validator
 
 from . import codebank
 
-# Advanced settings the UI may change (all other parameters keep code-bank defaults)
-ADVANCED_PARAMS = ("padj_cutoff", "log2fc_cutoff", "lfc_shrinkage", "min_count", "run_enrichment",
-                   "gene_set_collections", "exclude_samples", "n_label_volcano", "n_heatmap_genes")
+import re
+
+# Advanced settings the UI and the assistants may change (all other parameters keep
+# code-bank defaults). A setting is only offered when the code bank's manifest has it.
+ANALYSIS_PARAMS = ("padj_cutoff", "log2fc_cutoff", "lfc_shrinkage", "min_count", "run_enrichment",
+                   "gene_set_collections", "exclude_samples")
+PLOT_PARAMS = ("n_label_volcano", "n_heatmap_genes", "volcano_label_genes", "plot_palette", "group_colours",
+               "up_colour", "down_colour", "pca_colour_by", "pca_shape_by", "pca_label_samples")
+ADVANCED_PARAMS = ANALYSIS_PARAMS + PLOT_PARAMS
+HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+NAMED_COLOURS = {"black", "white", "grey", "gray", "red", "blue", "green", "orange", "purple", "pink", "brown",
+                 "yellow", "darkblue", "darkred", "darkgreen", "navy", "firebrick", "steelblue", "tomato", "gold"}
+
+
+def is_colour(v: str) -> bool:
+    return isinstance(v, str) and (bool(HEX.match(v)) or v.lower() in NAMED_COLOURS)
 
 
 class AnalysisSettings(BaseModel):
@@ -40,10 +53,28 @@ def manifest_params() -> dict[str, dict]:
     return out
 
 
-def check_value(name: str, value, spec: dict):
+def available_advanced() -> list[str]:
+    """The advanced settings this code bank version supports."""
+    specs = manifest_params()
+    return [k for k in ADVANCED_PARAMS if k in specs]
+
+
+def check_value(name: str, value, spec: dict, columns: list[str] | None = None):
     """Return the value converted to its manifest type, or raise ValueError with a plain message."""
     t = spec.get("type")
     allowed = spec.get("values")
+    if t == "colour":
+        if not is_colour(value):
+            raise ValueError(f"{name} must be a colour such as #D55E00.")
+        return value
+    if t == "column":
+        if value in (None, "", "none"):
+            return value or None
+        if not isinstance(value, str):
+            raise ValueError(f"{name} must be a column of the sample table.")
+        if columns is not None and value not in columns:
+            raise ValueError(f"{name}: '{value}' is not a column of the sample table.")
+        return value
     if t == "number":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{name} must be a number.")
@@ -67,14 +98,22 @@ def check_value(name: str, value, spec: dict):
             bad = [x for x in value if x not in allowed]
             if bad:
                 raise ValueError(f"{name}: {', '.join(bad)} not allowed (choose from {', '.join(allowed)}).")
+        if name == "group_colours":
+            for x in value:
+                level, _, colour = x.partition("=")
+                if not level.strip() or not is_colour(colour.strip()):
+                    raise ValueError(f"group_colours entries look like WT=#000000; got '{x}'.")
         return value
     if not isinstance(value, str):
         raise ValueError(f"{name} must be text.")
     return value
 
 
-def validate(settings: AnalysisSettings) -> tuple[AnalysisSettings, list[str]]:
-    """Checked copy of the settings and a list of problems (empty when valid)."""
+def validate(settings: AnalysisSettings, columns: list[str] | None = None) -> tuple[AnalysisSettings, list[str]]:
+    """Checked copy of the settings and a list of problems (empty when valid).
+
+    `columns` (the sample table's columns, when known) lets column settings be checked too.
+    """
     specs = manifest_params()
     problems: list[str] = []
     try:
@@ -93,7 +132,7 @@ def validate(settings: AnalysisSettings) -> tuple[AnalysisSettings, list[str]]:
             problems.append(f"Unknown setting '{k}'.")
             continue
         try:
-            clean_adv[k] = check_value(k, v, specs[k])
+            clean_adv[k] = check_value(k, v, specs[k], columns)
         except ValueError as e:
             problems.append(str(e))
     for k in ("padj_cutoff",):

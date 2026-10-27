@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { api, type AgentSetup, type CheckResult, type Settings, type Upload } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { api, type CheckResult, type Settings, type SetupChatItem, type SetupChatState, type Upload } from "../api";
 import { CheckList, type Explanations, Notice, SourceTag, Stepper } from "../components/common";
 
-type ParamSpec = { type: string; values?: string[]; default: unknown };
+type ParamSpec = { type: string; values?: string[]; default: unknown; description?: string };
 
 const ORGANISM_LABELS: Record<string, string> = {
   auto: "Detect from gene IDs",
@@ -12,62 +12,58 @@ const ORGANISM_LABELS: Record<string, string> = {
   other: "Other (no gene names or pathways)",
 };
 
-function initialSettings(up: Upload): Settings {
-  const ex = (up.example_settings ?? {}) as Partial<Settings> & { covariates?: string[] | string };
-  const p = up.proposal;
-  const exCovs = ex.covariates === undefined ? undefined : Array.isArray(ex.covariates) ? ex.covariates : [ex.covariates];
-  return {
-    condition: ex.condition ?? p.condition ?? "",
-    reference_level: ex.reference_level ?? p.reference_level ?? "",
-    test_level: ex.test_level ?? p.test_level ?? "",
-    covariates: exCovs ?? p.covariates,
-    organism: ex.organism ?? "auto",
-    run_name: up.example ?? "analysis",
-    advanced: {},
-  };
+const SETTING_LABELS: Record<string, string> = {
+  padj_cutoff: "Adjusted p-value cutoff", log2fc_cutoff: "Minimum |log2 fold change|", lfc_shrinkage: "Fold-change shrinkage",
+  min_count: "Minimum reads per gene", run_enrichment: "Pathway analysis", gene_set_collections: "Gene-set collections",
+  exclude_samples: "Samples left out", n_label_volcano: "Genes labelled on the volcano plot",
+  volcano_label_genes: "Genes to label on the volcano plot", n_heatmap_genes: "Genes in the heatmap",
+  plot_palette: "Colour palette", group_colours: "Group colours", up_colour: "Colour for higher genes",
+  down_colour: "Colour for lower genes", pca_colour_by: "PCA coloured by", pca_shape_by: "PCA shapes by",
+  pca_label_samples: "Sample names on the PCA",
+};
+
+const PALETTE_LABELS: Record<string, string> = {
+  okabe_ito: "Colour-blind safe (default)", set2: "Soft colours", viridis: "Viridis", greys: "Greys",
+};
+
+const EXAMPLE_PROMPTS = [
+  "Also account for sex.",
+  "Use a stricter cutoff: adjusted p-value below 0.01.",
+  "Colour the PCA by batch and use shapes for sex.",
+  "Label Gapdh, Actb and Krt5 on the volcano plot.",
+];
+
+function fmtValue(v: unknown): string {
+  if (Array.isArray(v)) return v.join(", ") || "none";
+  if (typeof v === "boolean") return v ? "on" : "off";
+  return String(v);
 }
 
-function rulesSuggestion(up: Upload): AgentSetup {
-  const p = up.proposal;
-  return {
-    source: "rules", model: null, condition: p.condition, reference_level: p.reference_level, test_level: p.test_level,
-    covariates: p.covariates, explanation: p.reasons.join(" "), reasons: p.reasons,
-    questions: p.reference_guessed ? ["Please check that the control group is right."] : [], warnings: p.warnings,
-  };
-}
-
-function withSuggestion(s: Settings, sug: AgentSetup): Settings {
-  return {
-    ...s,
-    condition: sug.condition ?? s.condition,
-    reference_level: sug.reference_level ?? s.reference_level,
-    test_level: sug.test_level ?? s.test_level,
-    covariates: sug.covariates,
-  };
-}
-
-function sameSetup(s: Settings, sug: AgentSetup | null): boolean {
-  return !!sug && s.condition === sug.condition && s.reference_level === sug.reference_level &&
-    s.test_level === sug.test_level && [...s.covariates].sort().join("|") === [...sug.covariates].sort().join("|");
-}
+const sameSettings = (a: Settings | null | undefined, b: Settings | null | undefined) =>
+  !!a && !!b && JSON.stringify({ ...a, covariates: [...a.covariates].sort() }) ===
+    JSON.stringify({ ...b, covariates: [...b.covariates].sort() });
 
 export default function Dataset() {
   const { uploadId = "" } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const firstMessage = (location.state as { firstMessage?: string } | null)?.firstMessage;
   const [upload, setUpload] = useState<Upload | null>(null);
+  const [chat, setChat] = useState<SetupChatState | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [check, setCheck] = useState<CheckResult | null>(null);
   const [checkedFor, setCheckedFor] = useState<string>("");
   const [params, setParams] = useState<Record<string, ParamSpec>>({});
   const [busy, setBusy] = useState<"check" | "run" | null>(null);
+  const [thinking, setThinking] = useState(false);
+  const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [suggestion, setSuggestion] = useState<AgentSetup | null>(null);
-  const [agentPending, setAgentPending] = useState(false);
   const [explain, setExplain] = useState<Explanations>({});
-  // Increases with every change the user makes, so a slow assistant answer never overwrites their edits
-  const editSeq = useRef(0);
+  const started = useRef(false);
+  const bottom = useRef<HTMLDivElement>(null);
 
   const runCheck = useCallback(async (s: Settings) => {
+    if (!s.condition || !s.reference_level || !s.test_level) return null;
     setBusy("check");
     setError(null);
     setExplain({});
@@ -89,37 +85,45 @@ export default function Dataset() {
     }
   }, [uploadId]);
 
-  const askAssistant = useCallback((base: Settings, condition: string | undefined, autoApply: boolean) => {
-    const seq = editSeq.current;
-    setAgentPending(true);
-    api.agentSetup(uploadId, condition)
-      .then((sug) => {
-        if (editSeq.current !== seq) return; // the user changed something meanwhile
-        setSuggestion(sug);
-        if (autoApply && sug.source === "model" && !sameSetup(base, sug)) {
-          const next = withSuggestion(base, sug);
-          setSettings(next);
-          runCheck(next);
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => setAgentPending(false));
+  const send = useCallback(async (text: string, current?: Settings) => {
+    setThinking(true);
+    setError(null);
+    setChat((c) => c && { ...c, transcript: [...c.transcript, { role: "user", text: text || "(no description given)" }] });
+    try {
+      const st = await api.sendSetupChat(uploadId, text, current);
+      setChat(st);
+      setSettings(st.setup);
+      runCheck(st.setup);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setThinking(false);
+    }
   }, [uploadId, runCheck]);
 
   useEffect(() => {
     api.options().then((o) => setParams(o.parameters)).catch(() => undefined);
-    api.getUpload(uploadId)
-      .then((up) => {
+    Promise.all([api.getUpload(uploadId), api.setupChat(uploadId)])
+      .then(([up, st]) => {
         setUpload(up);
-        const s = initialSettings(up);
-        setSettings(s);
-        setSuggestion(rulesSuggestion(up));
-        if (s.condition && s.reference_level && s.test_level) runCheck(s);
-        // Example datasets come with a curated setup: show the assistant's view, do not apply it
-        askAssistant(s, undefined, !up.example_settings);
+        setChat(st);
+        setSettings(st.setup);
+        runCheck(st.setup);
+        if (st.transcript.length === 0 && !started.current) {
+          started.current = true;
+          send(firstMessage ?? "");
+        }
       })
       .catch((e) => setError((e as Error).message));
-  }, [uploadId, runCheck, askAssistant]);
+  }, [uploadId, runCheck, send, firstMessage]);
+
+  useEffect(() => { bottom.current?.scrollIntoView({ block: "nearest" }); }, [chat?.transcript.length, thinking]);
+
+  const lastSetup = useMemo(() => {
+    const answers = (chat?.transcript ?? []).filter((t) => t.role === "assistant" && t.setup);
+    return answers.length ? answers[answers.length - 1].setup! : chat?.setup ?? null;
+  }, [chat]);
+  const edited = !!settings && !!lastSetup && !sameSettings(settings, lastSetup);
 
   const groupColumns = useMemo(
     () => (upload?.columns ?? []).filter((c) => c.n_levels >= 2 && !c.unique_per_sample && !c.numeric && c.n_missing === 0),
@@ -134,36 +138,40 @@ export default function Dataset() {
   const stale = check !== null && checkedFor !== JSON.stringify(settings);
 
   if (error && !upload) return <Notice kind="fail">{error}</Notice>;
-  if (!upload || !settings) return <p><span className="spinner" /> Loading your files…</p>;
+  if (!upload || !settings || !chat) return <p><span className="spinner" /> Loading your files…</p>;
 
-  const set = (patch: Partial<Settings>) => {
-    editSeq.current += 1;
-    setSettings({ ...settings, ...patch });
-  };
+  const set = (patch: Partial<Settings>) => setSettings({ ...settings, ...patch });
   const setAdvanced = (key: string, value: unknown) => {
     const adv = { ...settings.advanced };
-    if (value === undefined || value === params[key]?.default) delete adv[key];
+    if (value === undefined || value === "" || JSON.stringify(value) === JSON.stringify(params[key]?.default)) delete adv[key];
     else adv[key] = value;
     set({ advanced: adv });
   };
 
   async function changeCondition(condition: string) {
-    // Ask the backend for a fresh proposal (control group, covariates) for this column
-    editSeq.current += 1;
     try {
       const up = await api.getUpload(uploadId, condition);
       setUpload(up);
-      const rules = rulesSuggestion(up);
-      const next = withSuggestion({ ...settings!, condition }, rules);
-      setSettings(next);
-      setSuggestion(rules);
-      askAssistant(next, condition, true);
+      const p = up.proposal;
+      setSettings({ ...settings!, condition, reference_level: p.reference_level ?? "", test_level: p.test_level ?? "",
+        covariates: p.covariates });
     } catch (e) {
       setError((e as Error).message);
     }
   }
 
-  async function checkAndRun() {
+  function sendInput() {
+    const text = input.trim();
+    if (!text || thinking) return;
+    setInput("");
+    send(text, edited ? settings! : undefined);
+  }
+
+  function onKey(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendInput(); }
+  }
+
+  async function approveAndRun() {
     const s = settings!;
     let res = check;
     if (!res || stale) res = await runCheck(s);
@@ -171,9 +179,8 @@ export default function Dataset() {
     setBusy("run");
     try {
       const job = await api.startRun(uploadId, s, {
-        source: upload!.example_settings && !sameSetup(s, suggestion) ? "example" : suggestion?.source ?? "rules",
-        model: suggestion?.model ?? null,
-        changed_by_user: !sameSetup(s, suggestion),
+        source: chat!.source === "model" ? "setup_chat" : "rules", model: chat!.model, setup_chat: chat!.id,
+        changed_by_user: edited,
       });
       navigate(`/runs/${job.id}`);
     } catch (e) {
@@ -184,38 +191,113 @@ export default function Dataset() {
 
   const fileChecks = check?.checks.filter((c) => c.group === "files") ?? [];
   const designChecks = check?.checks.filter((c) => c.group === "design") ?? [];
-  const sug = suggestion ?? rulesSuggestion(upload);
-  const canApply = !sameSetup(settings, sug) && sug.condition;
+  const fileFail = fileChecks.some((c) => c.status === "fail");
   const collections = params.gene_set_collections;
   const chosenCollections = (settings.advanced.gene_set_collections as string[] | undefined)
     ?? (collections?.default as string[] | undefined) ?? [];
   const excluded = (settings.advanced.exclude_samples as string[] | undefined) ?? [];
+  const columnNames = upload.metadata_preview.columns.slice(1);
+  const groupColours = Object.fromEntries(((settings.advanced.group_colours as string[] | undefined) ?? [])
+    .map((e) => e.split("=") as [string, string]));
+  const canRun = !!settings.condition && !!settings.reference_level && !!settings.test_level &&
+    !(check && !stale && check.status === "fail");
 
   return (
     <>
       <Stepper current={1} />
-      <h1>Check your files and set up the comparison</h1>
+      <h1>Set up your analysis</h1>
       <p className="muted">
         Counts: <strong>{upload.counts_original_name}</strong> · Samples: <strong>{upload.metadata_original_name}</strong>
         {" "}({upload.metadata_preview.n_rows} samples)
       </p>
       {error && <Notice kind="fail">{error}</Notice>}
 
+      <div className="setup-layout">
+        <section className="card chat setup-chat">
+          <div className="row">
+            <h2 style={{ margin: 0 }}>Setup assistant</h2>
+            <SourceTag source={chat.source} model={chat.model} />
+            <span className="spacer" />
+            <button className="link small" disabled={thinking} onClick={async () => {
+              const st = await api.resetSetupChat(uploadId);
+              setChat(st); setSettings(st.setup);
+            }}>Start over</button>
+          </div>
+          <div className="chat-log">
+            {chat.transcript.map((t, i) => <SetupMessage key={i} item={t} />)}
+            {thinking && <p className="muted small"><span className="spinner" /> The assistant is reading your sample table… (up to a minute the first time)</p>}
+            <div ref={bottom} />
+          </div>
+          {chat.transcript.length > 0 && chat.transcript.length < 3 && !thinking && (
+            <div className="suggestions">
+              {EXAMPLE_PROMPTS.map((s) => <button key={s} className="secondary small" onClick={() => setInput(s)}>{s}</button>)}
+            </div>
+          )}
+          <div className="chat-input">
+            <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={onKey} rows={2} disabled={thinking}
+              placeholder="Ask for changes: covariates, groups, cutoffs, samples to leave out, plot colours or shapes… (Enter to send)"
+              aria-label="Message to the setup assistant" />
+            <button onClick={sendInput} disabled={thinking || !input.trim()}>Send</button>
+          </div>
+          <p className="muted small" style={{ marginBottom: 0 }}>
+            The assistant can only change the code bank's settings. The methods (DESeq2, fgsea) are fixed.
+          </p>
+        </section>
+
+        <section className="card setup-card">
+          <h2>Proposed setup</h2>
+          <dl className="setup-summary">
+            <dt>Compare</dt>
+            <dd><strong>{settings.test_level || "?"}</strong> vs <strong>{settings.reference_level || "?"}</strong>
+              {conditionColumn && <span className="muted small"> ({conditionColumn.levels[settings.test_level] ?? 0} vs {conditionColumn.levels[settings.reference_level] ?? 0} samples, column {settings.condition})</span>}
+            </dd>
+            <dt>Accounting for</dt>
+            <dd>{settings.covariates.length ? settings.covariates.join(", ") : <span className="muted">nothing else</span>}</dd>
+            <dt>Organism</dt>
+            <dd>{ORGANISM_LABELS[settings.organism] ?? settings.organism}</dd>
+            {Object.entries(settings.advanced).map(([k, v]) => (
+              <div key={k} style={{ display: "contents" }}>
+                <dt>{SETTING_LABELS[k] ?? k}</dt><dd>{fmtValue(v)}</dd>
+              </div>
+            ))}
+          </dl>
+          {edited && <Notice kind="info">You edited the setup. The assistant will start from your version.</Notice>}
+          <div className="check-status">
+            {busy === "check" && <p className="small"><span className="spinner" /> Checking the files and the design…</p>}
+            {check && !stale && busy !== "check" && (
+              check.status === "fail"
+                ? <Notice kind="fail">{fileFail ? "The files need fixing before the analysis can run." : "This setup cannot run yet."} See the checks below.</Notice>
+                : <Notice kind={check.status === "warning" ? "warning" : "pass"}>
+                    {check.status === "warning" ? `Ready to run, with ${check.n_warning} warning(s) below.` : "Files and design checked: ready to run."}
+                  </Notice>
+            )}
+            {stale && <p className="muted small">The setup changed; it is checked again before the run starts.</p>}
+          </div>
+          {check && !stale && designChecks.some((c) => c.status !== "pass") && (
+            <CheckList checks={designChecks.filter((c) => c.status !== "pass")} explain={explain} />
+          )}
+          <div className="row" style={{ marginTop: 12 }}>
+            <button onClick={approveAndRun} disabled={busy !== null || thinking || !canRun}>
+              {busy === "run" ? <><span className="spinner" /> Starting…</> : "Approve and run"}
+            </button>
+            <button className="secondary" disabled={busy !== null || !settings.condition} onClick={() => runCheck(settings)}>
+              Check again
+            </button>
+          </div>
+          <p className="muted small">Nothing runs until you approve. The run records who proposed the setup and whether you changed it.</p>
+        </section>
+      </div>
+
       <section className="card">
-        <h2>1. File check</h2>
+        <h2>File check</h2>
         {busy === "check" && !check && <p><span className="spinner" /> Checking your files…</p>}
         {check && (
           <>
-            {check.checks.some((c) => c.group === "files" && c.status === "fail") ? (
-              <Notice kind="fail">Your files need fixing before the analysis can run. See the problems below.</Notice>
-            ) : (
-              <Notice kind="pass">Your files look good: raw counts, and sample names match between the two files.</Notice>
-            )}
+            {fileFail
+              ? <Notice kind="fail">Your files need fixing before the analysis can run. See the problems below.</Notice>
+              : <Notice kind="pass">Your files look good: raw counts, and sample names match between the two files.</Notice>}
             <CheckList checks={fileChecks} explain={explain} />
           </>
-        )}
-        {!check && busy !== "check" && (
-          <p className="muted">The files are checked once the comparison below is chosen.</p>
         )}
         <details style={{ marginTop: 12 }}>
           <summary className="muted small">Preview your files</summary>
@@ -248,111 +330,81 @@ export default function Dataset() {
       </section>
 
       <section className="card">
-        <h2>2. What do you want to compare?</h2>
-        <Notice kind="info">
-          <div className="row" style={{ gap: 4 }}>
-            <strong>Suggested setup</strong>
-            <SourceTag source={sug.source} model={sug.model} />
-            {agentPending && <span className="muted small" style={{ marginLeft: 8 }}><span className="spinner" /> The assistant is reading your sample table…</span>}
-          </div>
-          <p style={{ margin: "6px 0 0" }}>{sug.explanation}</p>
-          {sug.questions.length > 0 && (
-            <ul>{sug.questions.map((q) => <li key={q}><strong>Please check:</strong> {q}</li>)}</ul>
-          )}
-          {canApply && (
-            <div className="row" style={{ marginTop: 8 }}>
-              <span className="small">
-                Suggestion: <strong>{sug.test_level}</strong> vs <strong>{sug.reference_level}</strong> in <strong>{sug.condition}</strong>
-                {sug.covariates.length > 0 && <>, accounting for <strong>{sug.covariates.join(", ")}</strong></>}
-              </span>
-              <button className="secondary" onClick={() => { editSeq.current += 1; setSettings(withSuggestion(settings, sug)); }}>
-                Use this suggestion
-              </button>
-            </div>
-          )}
-          {sug.source === "rules" && sug.fallback_reason && !agentPending && (
-            <p className="muted small" style={{ margin: "6px 0 0" }}>Assistant not used: {sug.fallback_reason}</p>
-          )}
-        </Notice>
-        {sug.warnings.map((w) => <Notice key={w} kind="warning">{w}</Notice>)}
+        <details>
+          <summary><strong>Edit the setup directly</strong> <span className="muted small">(optional: everything the assistant can change)</span></summary>
 
-        <label className="field">
-          <span>Which column describes the groups?</span>
-          <select value={settings.condition} onChange={(e) => changeCondition(e.target.value)}>
-            {!settings.condition && <option value="">Choose a column…</option>}
-            {groupColumns.map((c) => (
-              <option key={c.name} value={c.name}>{c.name} ({Object.keys(c.levels).join(", ")})</option>
-            ))}
-          </select>
-        </label>
-
-        {conditionColumn && (
-          <div className="grid-2">
-            <label className="field">
-              <span>Control (baseline) group</span>
-              <select value={settings.reference_level} onChange={(e) => {
-                const ref = e.target.value;
-                set({ reference_level: ref, test_level: settings.test_level === ref ? levels.find((l) => l !== ref) ?? "" : settings.test_level });
-              }}>
-                {levels.map((l) => <option key={l} value={l}>{l} ({conditionColumn.levels[l]} samples)</option>)}
-              </select>
-              <small>Fold changes are reported relative to this group.</small>
-            </label>
-            <label className="field">
-              <span>Compare against</span>
-              <select value={settings.test_level} onChange={(e) => set({ test_level: e.target.value })}>
-                {levels.filter((l) => l !== settings.reference_level).map((l) => (
-                  <option key={l} value={l}>{l} ({conditionColumn.levels[l]} samples)</option>
-                ))}
-              </select>
-              <small>Positive fold change = higher in this group.</small>
-            </label>
-          </div>
-        )}
-
-        <div className="field">
-          <span style={{ fontWeight: 600, display: "block", marginBottom: 4 }}>Account for</span>
-          {covariateOptions.length === 0 ? (
-            <p className="muted small">No other columns to account for.</p>
-          ) : (
-            <div className="checks-inline">
-              {covariateOptions.map((c) => (
-                <label key={c.name}>
-                  <input type="checkbox" checked={settings.covariates.includes(c.name)}
-                    onChange={(e) => set({
-                      covariates: e.target.checked
-                        ? [...settings.covariates, c.name]
-                        : settings.covariates.filter((x) => x !== c.name),
-                    })} />
-                  {c.name}{c.numeric ? " (numeric)" : ""}
-                </label>
-              ))}
-            </div>
-          )}
-          <small className="muted">
-            Tick batch, sex, donor/animal (for paired samples) or other factors that differ between samples but are not
-            what you are testing.
-          </small>
-        </div>
-
-        <div className="grid-2">
-          <label className="field">
-            <span>Organism</span>
-            <select value={settings.organism} onChange={(e) => set({ organism: e.target.value })}>
-              {(params.organism?.values ?? ["auto", "human", "mouse", "other"]).map((o) => (
-                <option key={o} value={o}>{ORGANISM_LABELS[o] ?? o}</option>
+          <label className="field" style={{ marginTop: 12 }}>
+            <span>Which column describes the groups?</span>
+            <select value={settings.condition} onChange={(e) => changeCondition(e.target.value)}>
+              {!settings.condition && <option value="">Choose a column…</option>}
+              {groupColumns.map((c) => (
+                <option key={c.name} value={c.name}>{c.name} ({Object.keys(c.levels).join(", ")})</option>
               ))}
             </select>
           </label>
-          <label className="field">
-            <span>Name for this analysis</span>
-            <input type="text" value={settings.run_name} maxLength={40} onChange={(e) => set({ run_name: e.target.value })} />
-          </label>
-        </div>
 
-        <details>
-          <summary>Advanced settings</summary>
-          <div className="grid-2" style={{ marginTop: 12 }}>
+          {conditionColumn && (
+            <div className="grid-2">
+              <label className="field">
+                <span>Control (baseline) group</span>
+                <select value={settings.reference_level} onChange={(e) => {
+                  const ref = e.target.value;
+                  set({ reference_level: ref, test_level: settings.test_level === ref ? levels.find((l) => l !== ref) ?? "" : settings.test_level });
+                }}>
+                  {levels.map((l) => <option key={l} value={l}>{l} ({conditionColumn.levels[l]} samples)</option>)}
+                </select>
+                <small>Fold changes are reported relative to this group.</small>
+              </label>
+              <label className="field">
+                <span>Compare against</span>
+                <select value={settings.test_level} onChange={(e) => set({ test_level: e.target.value })}>
+                  {levels.filter((l) => l !== settings.reference_level).map((l) => (
+                    <option key={l} value={l}>{l} ({conditionColumn.levels[l]} samples)</option>
+                  ))}
+                </select>
+                <small>Positive fold change = higher in this group.</small>
+              </label>
+            </div>
+          )}
+
+          <div className="field">
+            <span style={{ fontWeight: 600, display: "block", marginBottom: 4 }}>Account for</span>
+            {covariateOptions.length === 0 ? (
+              <p className="muted small">No other columns to account for.</p>
+            ) : (
+              <div className="checks-inline">
+                {covariateOptions.map((c) => (
+                  <label key={c.name}>
+                    <input type="checkbox" checked={settings.covariates.includes(c.name)}
+                      onChange={(e) => set({
+                        covariates: e.target.checked
+                          ? [...settings.covariates, c.name]
+                          : settings.covariates.filter((x) => x !== c.name),
+                      })} />
+                    {c.name}{c.numeric ? " (numeric)" : ""}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="grid-2">
+            <label className="field">
+              <span>Organism</span>
+              <select value={settings.organism} onChange={(e) => set({ organism: e.target.value })}>
+                {(params.organism?.values ?? ["auto", "human", "mouse", "other"]).map((o) => (
+                  <option key={o} value={o}>{ORGANISM_LABELS[o] ?? o}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Name for this analysis</span>
+              <input type="text" value={settings.run_name} maxLength={40} onChange={(e) => set({ run_name: e.target.value })} />
+            </label>
+          </div>
+
+          <h3>Statistics</h3>
+          <div className="grid-2">
             <label className="field">
               <span>Adjusted p-value cutoff</span>
               <input type="number" step="0.01" min="0.0001" max="1"
@@ -403,32 +455,119 @@ export default function Dataset() {
                 </label>
               ))}
             </div>
-            <small className="muted">Only for samples with a known problem (e.g. failed library). The reason belongs in your notes.</small>
+            <small className="muted">Only for samples with a known problem (e.g. failed library).</small>
           </div>
+
+          {params.plot_palette && (
+            <>
+              <h3>Figures</h3>
+              <p className="muted small">These change how the figures look, never the results.</p>
+              <div className="grid-2">
+                <label className="field">
+                  <span>Colour palette for groups</span>
+                  <select value={(settings.advanced.plot_palette as string | undefined) ?? (params.plot_palette.default as string)}
+                    onChange={(e) => setAdvanced("plot_palette", e.target.value)}>
+                    {(params.plot_palette.values ?? []).map((v) => <option key={v} value={v}>{PALETTE_LABELS[v] ?? v}</option>)}
+                  </select>
+                </label>
+                {params.pca_colour_by && (
+                  <label className="field">
+                    <span>Colour the PCA by</span>
+                    <select value={(settings.advanced.pca_colour_by as string | undefined) ?? ""}
+                      onChange={(e) => setAdvanced("pca_colour_by", e.target.value || undefined)}>
+                      <option value="">The compared groups</option>
+                      {columnNames.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </label>
+                )}
+                {params.pca_shape_by && (
+                  <label className="field">
+                    <span>Point shapes on the PCA</span>
+                    <select value={(settings.advanced.pca_shape_by as string | undefined) ?? ""}
+                      onChange={(e) => setAdvanced("pca_shape_by", e.target.value || undefined)}>
+                      <option value="">First covariate (default)</option>
+                      <option value="none">No shapes</option>
+                      {columnNames.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </label>
+                )}
+                {params.pca_label_samples && (
+                  <label className="field">
+                    <span>
+                      <input type="checkbox" checked={(settings.advanced.pca_label_samples as boolean | undefined) ?? true}
+                        onChange={(e) => setAdvanced("pca_label_samples", e.target.checked)} /> Sample names on the PCA
+                    </span>
+                  </label>
+                )}
+              </div>
+              {params.group_colours && conditionColumn && (
+                <div className="field">
+                  <span style={{ fontWeight: 600, display: "block", marginBottom: 4 }}>Colour for each group</span>
+                  <div className="checks-inline">
+                    {levels.map((lv) => (
+                      <label key={lv}>
+                        <input type="color" value={groupColours[lv] ?? "#888888"} onChange={(e) => {
+                          const next = { ...groupColours, [lv]: e.target.value };
+                          setAdvanced("group_colours", Object.entries(next).map(([k, v]) => `${k}=${v}`));
+                        }} /> {lv}{groupColours[lv] ? "" : " (palette)"}
+                      </label>
+                    ))}
+                    {Object.keys(groupColours).length > 0 && (
+                      <button className="link small" onClick={() => setAdvanced("group_colours", undefined)}>Use the palette</button>
+                    )}
+                  </div>
+                </div>
+              )}
+              <div className="grid-2">
+                {params.up_colour && (
+                  <label className="field">
+                    <span>Genes higher in {settings.test_level || "the test group"}</span>
+                    <input type="color" value={(settings.advanced.up_colour as string | undefined) ?? (params.up_colour.default as string)}
+                      onChange={(e) => setAdvanced("up_colour", e.target.value.toUpperCase())} />
+                  </label>
+                )}
+                {params.down_colour && (
+                  <label className="field">
+                    <span>Genes lower in {settings.test_level || "the test group"}</span>
+                    <input type="color" value={(settings.advanced.down_colour as string | undefined) ?? (params.down_colour.default as string)}
+                      onChange={(e) => setAdvanced("down_colour", e.target.value.toUpperCase())} />
+                  </label>
+                )}
+              </div>
+              {params.volcano_label_genes && (
+                <label className="field">
+                  <span>Genes to label on the volcano plot</span>
+                  <input type="text" placeholder="e.g. Krt5, Elf5, Acta2 (empty = the top genes)"
+                    value={((settings.advanced.volcano_label_genes as string[] | undefined) ?? []).join(", ")}
+                    onChange={(e) => {
+                      const genes = e.target.value.split(/[,\s]+/).filter(Boolean);
+                      setAdvanced("volcano_label_genes", genes.length ? genes : undefined);
+                    }} />
+                </label>
+              )}
+            </>
+          )}
         </details>
       </section>
-
-      <section className="card">
-        <h2>3. Check the setup and run</h2>
-        {check && !stale && designChecks.length > 0 && <CheckList checks={designChecks} explain={explain} />}
-        {stale && <Notice kind="info">You changed the setup. It will be checked again before the analysis starts.</Notice>}
-        {check && !stale && check.status === "fail" && (
-          <Notice kind="fail">The analysis cannot run with these files or settings yet. Fix the problems marked above.</Notice>
-        )}
-        <div className="row" style={{ marginTop: 12 }}>
-          <button onClick={checkAndRun}
-            disabled={busy !== null || !settings.condition || !settings.reference_level || !settings.test_level || (!!check && !stale && check.status === "fail")}>
-            {busy === "run" ? <><span className="spinner" /> Starting…</> : busy === "check" ? <><span className="spinner" /> Checking…</> : "Run analysis"}
-          </button>
-          <button className="secondary" disabled={busy !== null || !settings.condition} onClick={() => runCheck(settings)}>
-            Check again
-          </button>
-          <span className="muted small">
-            Comparing <strong>{settings.test_level || "?"}</strong> vs <strong>{settings.reference_level || "?"}</strong>
-            {settings.covariates.length > 0 && <> accounting for <strong>{settings.covariates.join(", ")}</strong></>}
-          </span>
-        </div>
-      </section>
     </>
+  );
+}
+
+function SetupMessage({ item }: { item: SetupChatItem }) {
+  if (item.role === "user") return <div className="msg user">{item.text}</div>;
+  return (
+    <div className="msg assistant">
+      <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{item.text}</p>
+      {item.questions && item.questions.length > 0 && (
+        <ul className="small">{item.questions.map((q) => <li key={q}><strong>Please check:</strong> {q}</li>)}</ul>
+      )}
+      {item.changes && item.changes.length > 0 && (
+        <div className="change-chips">{item.changes.map((c) => <span key={c} className="chip">{c}</span>)}</div>
+      )}
+      {item.guardrail && item.guardrail.length > 0 && (
+        <p className="muted small">⛔ Kept the code bank's methods: {item.guardrail.map((g) => g.matched).join(", ")} is not available.</p>
+      )}
+      {item.fallback_reason && <p className="muted small">Assistant not used: {item.fallback_reason}</p>}
+    </div>
   );
 }

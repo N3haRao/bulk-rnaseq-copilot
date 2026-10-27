@@ -2,17 +2,19 @@
 
 Reading tools answer from the run's files (the same files the results tabs
 show). `run_python` / `run_r` run the assistant's own code in the sandbox for
-anything else: custom plots, extra statistics, tables, slides. `propose_rerun`
-never runs anything: it puts a suggested new run in front of the user, who
-starts it with one click.
+anything else: custom plots, tables, slides, and analyses with the code bank's
+own methods. Code that uses a method the code bank does not use (edgeR, limma,
+t-tests per gene, other enrichment tools, ...) or installs software is blocked
+before it runs (see guardrails.py). `propose_rerun` never runs anything: it puts
+a suggested new run in front of the user, who starts it with one click.
 """
 
 import base64
 import json
 from pathlib import Path
 
-from .. import results
-from ..params import ADVANCED_PARAMS, AnalysisSettings, validate
+from .. import guardrails, results
+from ..params import AnalysisSettings, available_advanced, validate
 from .sandbox import Workspace
 
 TEXT_EXTENSIONS = {".csv", ".tsv", ".txt", ".json", ".md", ".yaml", ".yml", ".log", ".gmt", ".R", ".py", ".html"}
@@ -68,13 +70,16 @@ TOOLS = [
     _tool("run_python",
           "Run Python code in the workspace (working directory = the workspace). Available: pandas, numpy, scipy, "
           "matplotlib, python-pptx, python-docx, openpyxl. Read inputs from run/, save every file you make in "
-          "outputs/ (it is shown to the user). Print what you need to see. Each call is a fresh process.",
+          "outputs/ (it is shown to the user). Print what you need to see. Each call is a fresh process. Only the "
+          "code bank's methods are allowed: code using another statistical method (edgeR, limma, per-gene t-tests, "
+          "other enrichment tools, ...) or installing packages is blocked before it runs.",
           {"code": {"type": "string"}, "description": {"type": "string", "description": "One short line for the user: what this code does."}},
           ["code", "description"]),
     _tool("run_r",
           "Run R code (Rscript) in the workspace. DESeq2 and the code bank's packages are installed; the fitted "
           "model is run/04_differential_expression/dds.rds and the transformed counts run/03_exploratory/vsd.rds. "
-          "Save files in outputs/. Each call is a fresh process.",
+          "Save files in outputs/. Each call is a fresh process. Only the code bank's methods are allowed (DESeq2, "
+          "apeglm/ashr shrinkage, vst, prcomp, fgsea/fora with msigdbr); other methods are blocked before running.",
           {"code": {"type": "string"}, "description": {"type": "string", "description": "One short line for the user: what this code does."}},
           ["code", "description"]),
     _tool("share_file",
@@ -85,9 +90,13 @@ TOOLS = [
           "Suggest a NEW run of the tested pipeline with changed settings (the user starts it with one click; the "
           "current run stays as it is). Use this for changes to the tested analysis itself.",
           {"changes": {"type": "object", "description": (
-              "Settings to change. Allowed keys: condition, reference_level, test_level, covariates (list), "
-              "organism, padj_cutoff, log2fc_cutoff, lfc_shrinkage, min_count, run_enrichment, "
-              "gene_set_collections (list), exclude_samples (list), n_label_volcano, n_heatmap_genes.")},
+              "Settings to change (only the code bank's parameters exist; methods cannot be changed). Allowed keys: "
+              "condition, reference_level, test_level, covariates (list), organism, padj_cutoff, log2fc_cutoff, "
+              "lfc_shrinkage, min_count, run_enrichment, gene_set_collections (list), exclude_samples (list), and "
+              "plot settings: n_label_volcano, n_heatmap_genes, volcano_label_genes (list of genes to label), "
+              "plot_palette (okabe_ito|set2|viridis|greys), group_colours (list like 'WT=#000000'), up_colour, "
+              "down_colour (hex), pca_colour_by, pca_shape_by (sample-table columns; 'none' = no shapes), "
+              "pca_label_samples. Settings this code-bank version does not have are rejected.")},
            "reason": {"type": "string", "description": "One sentence for the user on why."}},
           ["changes", "reason"]),
 ]
@@ -195,6 +204,14 @@ class ToolBox:
 
     # ---- running code ------------------------------------------------------------------------------
     def _run(self, language: str, code: str, description: str):
+        blocked = guardrails.check_code(code)
+        if blocked:
+            self.ws.log_blocked(language, code, [v.as_dict() for v in blocked])
+            msg = " ".join(v.message() for v in blocked)
+            event = {"title": description, "language": language, "code": code, "ok": False, "blocked": True,
+                     "output": "Not run: " + msg, "files": [], "error": True}
+            return ("BLOCKED, the code was not run. " + msg + " Rewrite it with the code bank's methods, or tell the "
+                    "user this cannot be done within the code bank."), event
         r = self.ws.run(language, code)
         parts = [f"exit: {'ok' if r.ok else 'error'} ({r.seconds} s)"]
         if r.stdout:
@@ -226,16 +243,18 @@ class ToolBox:
         base = dict(self.job["settings"])
         adv = dict(base.get("advanced") or {})
         top_keys = {"condition", "reference_level", "test_level", "covariates", "organism"}
+        advanced = set(available_advanced())
         for k, v in changes.items():
             if k in top_keys:
                 base[k] = v
-            elif k in ADVANCED_PARAMS:
+            elif k in advanced:
                 adv[k] = v
             else:
-                raise ValueError(f"'{k}' cannot be changed in a rerun. Allowed: {', '.join(sorted(top_keys | set(ADVANCED_PARAMS)))}.")
+                raise ValueError(f"'{k}' is not a setting of the code bank, so it cannot be changed (methods are fixed). "
+                                 f"Allowed: {', '.join(sorted(top_keys | advanced))}.")
         base["advanced"] = adv
         base["run_name"] = (base.get("run_name") or "analysis")[:30] + "_rerun"
-        s, problems = validate(AnalysisSettings(**base))
+        s, problems = validate(AnalysisSettings(**base), columns=results.sample_columns(self.run_dir))
         if problems:
             raise ValueError("These settings are not valid: " + " ".join(problems))
         event = {"title": "Suggested a new run", "rerun": {"settings": s.model_dump(), "changes": changes,
@@ -254,3 +273,4 @@ def _size(n: int) -> str:
             return f"{n:.0f} {unit}"
         n /= 1024
     return f"{n:.0f} TB"
+    

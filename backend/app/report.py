@@ -35,6 +35,7 @@ def build(job: dict, job_dir: Path, run_dir: Path, *, refresh: bool = False) -> 
         narrative["written"] = datetime.now().isoformat(timespec="seconds")
         narrative_path.write_text(json.dumps(narrative, indent=2, default=str))
         (out / "report.pdf").unlink(missing_ok=True)
+        (out / "report.pptx").unlink(missing_ok=True)
     (out / "report.html").write_text(render_html(job, run_dir, narrative))
     return status(job_dir)
 
@@ -81,6 +82,18 @@ def pdf(job_dir: Path) -> Path:
         raise ReportError("Chromium for PDF export is not installed: backend/.venv/bin/python -m playwright "
                           f"install chromium ({str(e).splitlines()[0]})") from e
     return pdf_path
+
+
+def pptx(job: dict, job_dir: Path, run_dir: Path) -> Path:
+    """report.pptx with the same narrative, figures and tables as the HTML report."""
+    from . import report_pptx
+    narrative_path = job_dir / "report" / "narrative.json"
+    if not narrative_path.exists():
+        build(job, job_dir, run_dir)
+    out = job_dir / "report" / "report.pptx"
+    if out.exists() and out.stat().st_mtime >= narrative_path.stat().st_mtime:
+        return out
+    return report_pptx.build(job, job_dir, run_dir, json.loads(narrative_path.read_text()))
 
 
 # ---- HTML ---------------------------------------------------------------------------------
@@ -285,6 +298,8 @@ def _origin(o: dict | None) -> str:
     if not o:
         return "not recorded"
     who = {"model": f"the assistant ({(o.get('model') or '').replace('ollama:', '')})", "rules": "built-in rules",
+           "setup_chat": f"the setup assistant ({(o.get('model') or '').replace('ollama:', '')})",
+           "chat": f"a rerun proposed in the chat ({o.get('model') or ''})",
            "example": "the example dataset's settings"}.get(o.get("source"), str(o.get("source")))
     return who + ("; changed by the user" if o.get("changed_by_user") else "; confirmed by the user")
 

@@ -16,7 +16,7 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import codebank
+from .. import codebank, guardrails
 from ..agents.reporter import build_facts
 from .model import ChatModel, ChatModelError
 from .sandbox import Workspace
@@ -97,7 +97,8 @@ class Conversation:
         text = (PROMPT.read_text()
                 + "\n\n# This analysis\n\n" + json.dumps(context, indent=1, default=str)
                 + "\n\n# Main results (from the run's files)\n\n" + json.dumps(facts, indent=1, default=str)
-                + "\n\n# Files\n\n" + json.dumps(guide, indent=1))
+                + "\n\n# Files\n\n" + json.dumps(guide, indent=1)
+                + "\n\n# Methods policy (from the " + guardrails.policy_source() + ")\n\n" + guardrails.describe_for_prompt())
         # stable for the whole conversation, so it is cached after the first request
         return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 

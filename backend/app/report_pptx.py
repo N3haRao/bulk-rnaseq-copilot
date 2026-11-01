@@ -119,6 +119,33 @@ def build(job: dict, job_dir: Path, run_dir: Path, narrative: dict) -> Path:
     deck.text(sl, "Suggested next steps", 6.9, 1.2, 6.0, 0.4, size=16, bold=True)
     deck.bullets(sl, sec["next_steps"], 6.9, 1.7, 6.0, 5.0, size=15)
 
+    # optional analyses (splicing, isoforms)
+    from . import extras
+    for module in extras.MODULES:
+        d = extras.latest(job_dir, module) if (job_dir / "extras" / module).exists() else None
+        xo = extras.overview(d) if d else None
+        if not xo or xo["status"] not in ("success", "success_with_errors"):
+            continue
+        xrd = extras.run_dir_of(d)
+        sm = xo.get("summary") or {}
+        if module == "splicing":
+            lines = [f"{sm.get('n_significant', 0)} significant splicing events in {sm.get('n_genes_significant', 0)} genes "
+                     f"({sm.get('n_up', 0)} more, {sm.get('n_down', 0)} less inclusion)",
+                     str(sm.get("significance_rule", ""))]
+            sve = (sm.get("splicing_vs_expression") or {}).get("genes") or {}
+            if sve:
+                lines.append("Compared with expression: " + "; ".join(f"{k} {v}" for k, v in sve.items()))
+        else:
+            dei, dui = sm.get("dei") or {}, sm.get("dui") or {}
+            lines = [f"Isoform expression: {dei.get('n_significant', 0)} transcripts in {dei.get('n_genes_with_significant_transcripts', 0)} genes",
+                     f"Isoform usage: {dui.get('n_genes_significant', 0)} genes, {dui.get('n_isoform_switches', 0)} isoform switches"
+                     if not dui.get("status") else f"Isoform usage not tested: {dui.get('reason', '')}"]
+        sl = deck.slide(xo["title"])
+        deck.bullets(sl, lines, MARGIN, 1.2, 4.6, 5.4, size=15)
+        figs = xo.get("figures") or []
+        if figs:
+            deck.image(sl, xrd, figs[0]["path"], 5.4, 1.2, W - 5.4 - MARGIN, 5.8)
+
     # 11. methods
     sl = deck.slide("Methods")
     rows = [["Comparison", f"{test} vs {ref} (column {p['condition']})"],
@@ -225,4 +252,3 @@ def _plain(md: str, limit: int = 1600) -> str:
     text = re.sub(r"\*\*?([^*]+)\*\*?", r"\1", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " … (full text in the HTML report)"
-  

@@ -1,0 +1,6 @@
+# Python for the website backend (packages from backend/requirements.txt via pip).
+name: app
+channels: [conda-forge]
+dependencies:
+  - python=3.13
+  - pip

@@ -1,10 +1,10 @@
-# RNA-seq analysis site (agentic omics testbed)
+# RNA-seq analysis site 
 
 A no-code website where a wet-lab biologist uploads a raw counts table and a sample table and gets a standard bulk RNA-seq analysis: input checks, QC, PCA, DESeq2 differential expression, volcano/MA plots, heatmap, pathway enrichment and a report with a methods paragraph.
 
 All analysis is done by the tested R scripts in the [rnaseq-codebank](https://github.com/N3haRao/rnaseq-codebank), included here as the `codebank/` git submodule. The website never writes analysis code; it fills in the code bank's documented parameters and runs it. See [PLAN.md](PLAN.md) for the full plan (agents come in Phases 2-4).
 
-**Status: Phase 5** (feedback from the demo on 10/27): the opening page is now a chat with the open-weight setup assistant, both assistants are held to the code bank's methods by code, every run has a code .zip for papers, and the report can be downloaded as PowerPoint. See "Phase 5" below. Earlier: Phase 4 (chat assistant). Phase 4 adds the **Ask (chat)** tab: Claude, through the Anthropic API, answers questions about a run, writes and runs its own Python or R code for custom plots, tables, statistics and slides, and proposes reruns of the tested pipeline. Phase 3 added a downloadable report (HTML and PDF) whose narrative is written by the same local model and checked sentence by sentence against the results. Before that, Phase 2 added the executor agent. Phase 1 gave the website: upload or example, automatic file check, guided setup, background runs with live progress, results tabs and downloads. Phase 2 adds an open-weight assistant (Qwen3-8B through Ollama, on the same laptop) that reads the sample table and proposes the setup, explains file problems with how to fix them, and explains run warnings. Without the assistant everything still works with built-in rules. Trial use with public data only.
+**Status: Phase 5** (feedback from the demo with Dr. Hari): the opening page is now a chat with the open-weight setup assistant, both assistants are held to the code bank's methods by code, every run has a code .zip for papers, and the report can be downloaded as PowerPoint. See "Phase 5" below. Earlier: Phase 4 (chat assistant). Phase 4 adds the **Ask (chat)** tab: Claude, through the Anthropic API, answers questions about a run, writes and runs its own Python or R code for custom plots, tables, statistics and slides, and proposes reruns of the tested pipeline. Phase 3 added a downloadable report (HTML and PDF) whose narrative is written by the same local model and checked sentence by sentence against the results. Before that, Phase 2 added the executor agent. Phase 1 gave the website: upload or example, automatic file check, guided setup, background runs with live progress, results tabs and downloads. Phase 2 adds an open-weight assistant (Qwen3-8B through Ollama, on the same laptop) that reads the sample table and proposes the setup, explains file problems with how to fix them, and explains run warnings. Without the assistant everything still works with built-in rules. Trial use with public data only.
 
 ## Setting up on a laptop (macOS or Linux)
 
@@ -82,6 +82,19 @@ How it works:
 - **PowerPoint report** ("Download PowerPoint", `GET /api/runs/<id>/report/pptx`). An 11-slide 16:9 deck with the same checked narrative, figures and tables as the HTML/PDF report.
 - **Plot options** (code bank v0.2.0): `plot_palette`, `group_colours`, `up_colour` / `down_colour`, `volcano_label_genes`, `pca_colour_by`, `pca_shape_by`, `pca_label_samples`. They change only how the figures look.
 - Next: containers (Docker / Apptainer) for the Ada server, then SkyRiver.
+
+### Running on Ada (Apptainer)
+
+`containers/` has the Apptainer images (the site with R, the code bank and the FASTQ tools; Ollama for the model), `build.sh`, and SLURM scripts for Ada. `containers/ada/site.slurm` runs the site behind an ssh tunnel, and `containers/ada/upstream.slurm` runs the FASTQ steps as a batch job. See [containers/README.md](containers/README.md).
+
+### Optional analyses: splicing and isoforms
+
+A finished run has a **Splicing & isoforms** tab with two optional analyses. Both use the run's own comparison and the code bank's modules (v0.4.0 or newer):
+
+- **Alternative splicing:** upload the rMATS output tables (or a .zip of rMATS's output folder) and say which group was rMATS sample 1. The code bank's `splicing/` module finds the significant events (FDR, ΔPSI, read coverage), makes the figures, tests pathways, and sorts genes into splicing only / expression only / both by comparing with this run's gene-level results.
+- **Transcript isoforms:** upload a .zip of Salmon output folders (`<sample>/quant.sf`, named like the run's samples), plus the GTF unless the transcript names include the gene (GENCODE). The `isoforms/` module runs **DEI**, differential isoform expression (DESeq2 per transcript, with this run's settings), and **DUI**, differential isoform usage (DEXSeq + stageR; isoform switches), with the run's sample table, groups and covariates.
+
+Analyses run in the background, one at a time (`backend/app/extras.py`, files under `data/jobs/<run>/extras/`). When one finishes, it is added to the HTML/PDF report and the PowerPoint, to the code .zip (`extra_analyses/<module>/` with its settings and a rerun script), and to the workspace of new chats. Tests: `backend/tests/test_extras.py`, which runs the real R modules and is skipped when R lacks DESeq2, DEXSeq, stageR, tximport or fgsea.
 
 ### Measuring the assistant
 

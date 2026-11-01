@@ -1,0 +1,32 @@
+# R, Bioconductor and every package the code bank and its modules use.
+# Versions are the ones the test suites passed with (code bank v0.4.0):
+# main pipeline, splicing (20 tests), isoforms (15), later/ (22), website (78).
+name: r
+channels: [conda-forge, bioconda]
+dependencies:
+  - r-base=4.5.3
+  - bioconductor-deseq2=1.50.2
+  - bioconductor-apeglm=1.32.0
+  - bioconductor-fgsea=1.36.2
+  - bioconductor-annotationdbi=1.72.0
+  - bioconductor-org.hs.eg.db
+  - bioconductor-org.mm.eg.db
+  - bioconductor-dexseq=1.56.0
+  - bioconductor-stager=1.32.0
+  - bioconductor-tximport=1.38.2
+  - bioconductor-airway            # example dataset
+  - bioconductor-pasilla           # example dataset
+  - r-msigdbr=26.1.1
+  - r-ashr
+  - r-ggplot2=4.0.3
+  - r-ggrepel=0.9.8
+  - r-pheatmap=1.0.13
+  - r-optparse=1.8.2
+  - r-yaml=2.3.12
+  - r-jsonlite=2.0.0
+  - r-data.table=1.18.6.1
+  - r-rmarkdown=2.32
+  - r-knitr
+  - r-readxl=1.6.0
+  - pandoc=3.13
+  

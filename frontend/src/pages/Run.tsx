@@ -4,11 +4,12 @@ import { api, codeZipUrl, fileUrl, type AgentWarnings, type Job, type ReportStat
 import { Badge, Figures, Markdown, Notice, SourceTag, Stepper, Tabs } from "../components/common";
 import ChatTab from "../components/ChatTab";
 import DeTab from "../components/DeTab";
+import ExtrasTab from "../components/ExtrasTab";
 import PathwaysTab from "../components/PathwaysTab";
 import { fmtInt, fmtNum, fmtP, fmtTime, geneLabel } from "../format";
 
 const RUNNING = new Set(["queued", "running"]);
-type TabId = "overview" | "chat" | "qc" | "samples" | "de" | "heatmap" | "pathways" | "methods";
+type TabId = "overview" | "chat" | "qc" | "samples" | "de" | "heatmap" | "pathways" | "extras" | "methods";
 
 export default function Run() {
   const { jobId = "" } = useParams();
@@ -108,6 +109,7 @@ export default function Run() {
               { id: "de", label: "Differential expression" },
               { id: "heatmap", label: "Heatmap" },
               { id: "pathways", label: "Pathways" },
+              { id: "extras", label: "Splicing & isoforms" },
               { id: "methods", label: "Methods & settings" },
             ]}
           />
@@ -118,6 +120,7 @@ export default function Run() {
           {tab === "de" && <DeTab jobId={jobId} r={results} />}
           {tab === "heatmap" && <Figures jobId={jobId} figures={results.figures.heatmap} />}
           {tab === "pathways" && <PathwaysTab jobId={jobId} r={results} />}
+          {tab === "extras" && <ExtrasTab job={job} />}
           {tab === "methods" && <MethodsTab job={job} r={results} />}
         </>
       )}
@@ -462,3 +465,4 @@ function MethodsTab({ job, r }: { job: Job; r: Results }) {
     </>
   );
 }
+      

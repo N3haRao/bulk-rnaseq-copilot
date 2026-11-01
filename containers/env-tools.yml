@@ -1,0 +1,10 @@
+# Command-line tools for the FASTQ / BAM steps (codebank/later/), in their own
+# environment so their Python does not clash with the website's.
+name: tools
+channels: [conda-forge, bioconda]
+dependencies:
+  - fastp=1.4.0
+  - star=2.7.10b
+  - samtools=1.25
+  - salmon=2.8.0
+  - rmats=4.4.0

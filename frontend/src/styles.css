@@ -143,7 +143,7 @@ tr:last-child td { border-bottom: none; }
 .tile .value { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .tile .label { color: var(--muted); font-size: 0.85rem; }
 
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; overflow-x: auto; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .tabs button {
   background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0;
   color: var(--muted); padding: 10px 12px; font-weight: 600; white-space: nowrap;

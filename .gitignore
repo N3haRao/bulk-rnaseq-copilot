@@ -20,3 +20,4 @@ backend/eval/results/
 # Secrets (Anthropic API key) and local settings
 .env
 frontend/tsconfig.tsbuildinfo
+containers/build/

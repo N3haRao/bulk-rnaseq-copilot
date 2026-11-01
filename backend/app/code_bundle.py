@@ -78,9 +78,10 @@ def build(job: dict, job_dir: Path, run_dir: Path, *, include_data: bool = False
         if setup.get("conversation"):
             put("setup/setup_conversation.md", _setup_markdown(setup["conversation"]))
         customs = _add_custom_analyses(put, job_dir)
+        extra_list = _add_extra_analyses(put, z, name, job_dir, include_data)
         methods = run_dir / "07_report" / "methods.md"
         put("README.md", _readme(job, run_dir, prov, cb, code_note, customs, setup,
-                                 methods.read_text() if methods.exists() else "", include_data))
+                                 methods.read_text() if methods.exists() else "", include_data) + _extras_readme(extra_list))
     tmp.replace(target)
     return target
 
@@ -260,6 +261,64 @@ def _conversation_markdown(meta: dict, transcript: list[dict]) -> str:
             out += [f"- `{t.get('script') or '(not saved)'}` ({status}): {t.get('title', '')}" +
                     (f" → {', '.join(t.get('files') or [])}" if t.get("files") else ""), ""]
     return "\n".join(out)
+
+
+# ---- optional analyses (splicing, isoforms) ------------------------------------------------------------
+EXTRA_SCRIPTS = {"splicing": "splicing/scripts/run_splicing.R", "isoforms": "isoforms/scripts/run_isoforms.R"}
+EXTRA_DATA_KEYS = {"rmats_dir": "rmats", "quant_dir": "quant", "metadata_file": None, "gtf_file": None, "tx2gene_file": None}
+
+
+def _add_extra_analyses(put, z, name: str, job_dir: Path, include_data: bool) -> list[dict]:
+    """extra_analyses/<module>/: the module's settings with relative data paths and a script to rerun it."""
+    from . import extras
+    out = []
+    for module, script in EXTRA_SCRIPTS.items():
+        d = extras.latest(job_dir, module) if (job_dir / "extras" / module).exists() else None
+        if d is None or not (d / "run_config.yaml").exists():
+            continue
+        rec = json.loads((d / "extra.json").read_text())
+        if rec.get("status") not in ("success", "success_with_errors"):
+            continue
+        cfg = yaml.safe_load((d / "run_config.yaml").read_text())
+        prefix = f"extra_analyses/{module}"
+        data_files = {}
+        for key, folder in EXTRA_DATA_KEYS.items():
+            if not cfg.get(key):
+                continue
+            src = Path(cfg[key])
+            rel = f"data/{folder or src.name}"
+            cfg[key] = rel
+            files = sorted(src.rglob("*")) if src.is_dir() else [src]
+            for f in files:
+                if f.is_file():
+                    data_files[f"{rel}/{f.relative_to(src)}" if src.is_dir() else rel] = f
+        cfg.pop("de_run", None)
+        put(f"{prefix}/run_config.yaml", "# Settings of this optional analysis (paths relative to this folder).\n" +
+            yaml.safe_dump(cfg, sort_keys=False))
+        put(f"{prefix}/data/SHA256SUMS", "".join(f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {rel}\n" for rel, f in data_files.items()))
+        if include_data:
+            for rel, f in data_files.items():
+                z.write(f, f"{name}/{prefix}/{rel}")
+        de_arg = ('DE_RUN="${1:-$(ls -d ../../runs/*/ 2>/dev/null | head -1)}"\n'
+                  'Rscript ../../codebank/' + script + ' --config run_config.yaml --runs_dir ../../runs --set "de_run=$DE_RUN"\n') \
+            if module == "splicing" else f"Rscript ../../codebank/{script} --config run_config.yaml --runs_dir ../../runs\n"
+        put(f"{prefix}/run_{module}.sh", "#!/usr/bin/env bash\n"
+            f"# Rerun the optional {module} analysis with the code bank in ../../codebank.\n"
+            "# Put its input files in data/ first (names and checksums in data/SHA256SUMS).\n"
+            + ("# Optional first argument: the main analysis run folder (from ../../run_analysis.sh) to compare with.\n" if module == "splicing" else "")
+            + 'set -euo pipefail\ncd "$(dirname "$0")"\n' + de_arg, executable=True)
+        out.append({"module": module, "run": Path(rec.get("run_dir") or "").name, "n_files": len(data_files)})
+    return out
+
+
+def _extras_readme(extra_list: list[dict]) -> str:
+    if not extra_list:
+        return ""
+    lines = ["", "## Optional analyses", ""]
+    for e in extra_list:
+        lines.append(f"- `extra_analyses/{e['module']}/`: settings (`run_config.yaml`) and `run_{e['module']}.sh` for the "
+                     f"{e['module']} analysis (run {e['run']}); its {e['n_files']} input file(s) are listed in `data/SHA256SUMS`.")
+    return "\n".join(lines) + "\n"
 
 
 # ---- README ---------------------------------------------------------------------------------------------

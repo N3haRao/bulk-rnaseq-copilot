@@ -1,0 +1,181 @@
+# =============================================================================
+# rnaseq-copilot.def  --  Apptainer image of the RNA-seq analysis site
+# =============================================================================
+# One image with everything the site and the code bank need:
+#   * the website (FastAPI backend + built React frontend) and Chromium for PDFs
+#   * R 4.5 with DESeq2, apeglm, fgsea/msigdbr (+ the MSigDB database), DEXSeq, stageR,
+#     tximport, annotation and example data: main pipeline, splicing, isoforms
+#   * fastp, STAR, samtools, Salmon, rMATS for codebank/later/ (FASTQ -> results)
+#   * the code bank as a git clone at the commit the site pins (so every run
+#     records its exact commit)
+# The open-weight model runs in a separate image (ollama.def).
+#
+# Build with containers/build.sh, which prepares the build folder. Do not run
+# `apptainer build` on this file directly from the repository.
+#
+# Run (see containers/README.md and containers/ada/):
+#   apptainer run --containall --cleanenv --bind /path/to/data:/data rnaseq-copilot.sif
+#   apptainer run --app upstream ... rnaseq-copilot.sif --config upstream.yaml
+#   apptainer run --app tests rnaseq-copilot.sif
+# =============================================================================
+
+# ---- Stage 1: build the frontend --------------------------------------------------
+Bootstrap: docker
+From: node:20.18.1-bookworm-slim
+Stage: frontend
+
+%files
+    frontend /src/frontend
+
+%post
+    set -eu
+    cd /src/frontend
+    rm -rf node_modules dist
+    if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+    npm run build
+
+# ---- Stage 2: the image -----------------------------------------------------------------
+Bootstrap: docker
+From: ubuntu:24.04
+Stage: final
+
+%files from frontend
+    /src/frontend/dist /opt/app/frontend/dist
+
+%files
+    backend /opt/app/backend
+    codebank /opt/app/codebank
+    containers/env-r.yml /opt/envs/env-r.yml
+    containers/env-tools.yml /opt/envs/env-tools.yml
+    containers/env-app.yml /opt/envs/env-app.yml
+    VERSION /opt/app/VERSION
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates curl bzip2 git procps tzdata locales
+    sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
+
+    # git runs as the user, but the code bank clone belongs to root: allow it, so runs record the commit
+    git config --system --add safe.directory '*'
+
+    # ---- conda environments (versions pinned in containers/env-*.yml) ----
+    curl -fsSL -o /usr/local/bin/micromamba \
+        https://github.com/mamba-org/micromamba-releases/releases/download/2.0.5-0/micromamba-linux-64
+    chmod +x /usr/local/bin/micromamba
+    export MAMBA_ROOT_PREFIX=/opt/conda
+    micromamba create -y -p /opt/conda/envs/r -f /opt/envs/env-r.yml
+    micromamba create -y -p /opt/conda/envs/tools -f /opt/envs/env-tools.yml
+    micromamba create -y -p /opt/conda/envs/app -f /opt/envs/env-app.yml
+    micromamba clean -a -y
+
+    # ---- website backend ----
+    /opt/conda/envs/app/bin/pip install --no-cache-dir -r /opt/app/backend/requirements.txt
+    rm -rf /opt/app/backend/.venv /opt/app/backend/.pytest_cache
+    find /opt/app/backend -name __pycache__ -type d -prune -exec rm -rf {} +
+
+    # ---- MSigDB gene sets: msigdbr downloads one database (all species and collections, from Zenodo) into
+    #      R_USER_CACHE_DIR on first use. Fetch it now into /opt/r-cache so nothing is downloaded at run time.
+    export R_USER_CACHE_DIR=/opt/r-cache
+    /opt/conda/envs/r/bin/Rscript -e 'stopifnot(nrow(msigdbr::msigdbr(species = "Homo sapiens", collection = "H")) > 0, nrow(msigdbr::msigdbr(species = "Mus musculus", collection = "H")) > 0)'
+    /opt/conda/envs/r/bin/Rscript /opt/app/codebank/scripts/00_setup_environment.R --check
+
+    # ---- Chromium for PDF reports ----
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw /opt/conda/envs/app/bin/python -m playwright install --with-deps chromium
+
+    # ---- example datasets (GSE60450 comes from GEO; the others from Bioconductor packages) ----
+    cd /opt/app/codebank
+    /opt/conda/envs/r/bin/Rscript scripts/make_example_data.R || echo "WARNING: some example datasets could not be made"
+
+    # ---- record what is inside ----
+    {
+      echo "image built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "site: $(cat /opt/app/VERSION)"
+      echo "code bank: $(git -C /opt/app/codebank describe --tags --always) ($(git -C /opt/app/codebank rev-parse HEAD))"
+      /opt/conda/envs/r/bin/R --version | head -1
+      /opt/conda/envs/tools/bin/salmon --version
+      echo "STAR $(/opt/conda/envs/tools/bin/STAR --version)"
+      /opt/conda/envs/tools/bin/samtools --version | head -1
+      /opt/conda/envs/tools/bin/fastp --version 2>&1
+      echo "rMATS $(/opt/conda/envs/tools/bin/rmats.py --version 2>&1 | tail -1)"
+      /opt/conda/envs/app/bin/python --version
+    } > /opt/app/IMAGE_VERSIONS.txt
+    micromamba env export -p /opt/conda/envs/r > /opt/app/env-r.lock.yml
+    micromamba env export -p /opt/conda/envs/tools > /opt/app/env-tools.lock.yml
+
+    apt-get clean && rm -rf /var/lib/apt/lists/* /root/.cache
+    chmod -R a+rX /opt
+
+%environment
+    # tools first: rmats.py starts with "#!/usr/bin/env python" and needs the tools env's Python
+    export PATH=/opt/conda/envs/tools/bin:/opt/conda/envs/r/bin:/opt/conda/envs/app/bin:/usr/local/bin:/usr/bin:/bin
+    export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+    export CODEBANK_DIR=/opt/app/codebank
+    export FRONTEND_DIST=/opt/app/frontend/dist
+    export RSCRIPT=/opt/conda/envs/r/bin/Rscript
+    export PLAYWRIGHT_BROWSERS_PATH=/opt/pw
+    export OMICS_DATA_DIR=${OMICS_DATA_DIR:-/data}
+    export OLLAMA_URL=${OLLAMA_URL:-http://127.0.0.1:11434}
+    export R_LIBS_USER=/nonexistent          # never pick up packages from the user's home
+    export R_USER_CACHE_DIR=/opt/r-cache     # MSigDB gene sets, fetched when the image was built
+    export MPLCONFIGDIR=/tmp/mpl-$USER PYTHONDONTWRITEBYTECODE=1
+
+%runscript
+    # The website. Data (uploads, runs, saved API key) live in $OMICS_DATA_DIR: bind a writable folder there.
+    set -eu
+    PORT=${PORT:-8000}
+    HOST=${HOST:-127.0.0.1}
+    if ! mkdir -p "$OMICS_DATA_DIR" 2>/dev/null || [ ! -w "$OMICS_DATA_DIR" ]; then
+      echo "The data folder $OMICS_DATA_DIR is not writable. Run with --bind /path/to/your/data:/data" >&2
+      exit 1
+    fi
+    echo "RNA-seq analysis site: http://$HOST:$PORT  (data in $OMICS_DATA_DIR; model at $OLLAMA_URL)"
+    cd /opt/app/backend
+    exec /opt/conda/envs/app/bin/uvicorn app.main:app --host "$HOST" --port "$PORT"
+
+%apprun upstream
+    # FASTQ -> counts, splicing and isoforms (codebank/later/scripts/run_upstream.R); arguments are passed on.
+    exec /opt/conda/envs/r/bin/Rscript /opt/app/codebank/later/scripts/run_upstream.R "$@"
+
+%apprun rscript
+    # Any code-bank entry point, e.g.: apptainer run --app rscript img.sif /opt/app/codebank/splicing/scripts/run_splicing.R --help
+    exec /opt/conda/envs/r/bin/Rscript "$@"
+
+%apprun tests
+    # The code bank's module tests and the website's tests, inside the image (writes to a temporary copy).
+    set -eu
+    T=$(mktemp -d)
+    cp -r /opt/app/codebank "$T/codebank"
+    cd "$T/codebank"
+    for t in splicing/tests/run_splicing_tests.R isoforms/tests/run_isoform_tests.R later/tests/run_later_tests.R; do
+      echo "== $t"; Rscript "$t" | tail -3
+    done
+    cp -r /opt/app/backend "$T/backend"
+    cd "$T/backend"
+    /opt/conda/envs/app/bin/pip install --quiet --no-cache-dir --target "$T/pylib" pytest==8.3.5
+    CODEBANK_DIR="$T/codebank" PYTHONPATH="$T/pylib" /opt/conda/envs/app/bin/python -m pytest -q -p no:cacheprovider
+    rm -rf "$T"
+
+%test
+    set -eu
+    export PATH=/opt/conda/envs/tools/bin:/opt/conda/envs/r/bin:/opt/conda/envs/app/bin:$PATH
+    Rscript -e 'for (p in c("DESeq2","apeglm","fgsea","msigdbr","DEXSeq","stageR","tximport","org.Hs.eg.db","org.Mm.eg.db","ggplot2","pheatmap","rmarkdown")) stopifnot(requireNamespace(p, quietly = TRUE)); cat("R packages: ok\n")'
+    for t in fastp STAR samtools salmon rmats.py pandoc; do command -v $t >/dev/null || { echo "missing $t"; exit 1; }; done
+    /opt/conda/envs/app/bin/python -c "import fastapi, anthropic, pptx, playwright; print('Python packages: ok')"
+    test -f /opt/app/frontend/dist/index.html
+    git -C /opt/app/codebank rev-parse HEAD >/dev/null
+    echo "image test: ok"
+
+%labels
+    org.opencontainers.image.title RNA-seq analysis site (bulk RNA-seq copilot)
+    org.opencontainers.image.source https://github.com/N3haRao/agentic-omics-testbed
+
+%help
+    RNA-seq analysis site with the lab's code bank (DESeq2 pipeline, splicing, isoforms, FASTQ tools).
+      Site:      apptainer run --containall --cleanenv --bind DATA_DIR:/data rnaseq-copilot.sif   (PORT, HOST, OLLAMA_URL)
+      FASTQ:     apptainer run --app upstream --bind ... rnaseq-copilot.sif --config upstream.yaml
+      R scripts: apptainer run --app rscript rnaseq-copilot.sif /opt/app/codebank/<script>.R ...
+      Tests:     apptainer run --app tests rnaseq-copilot.sif
+      Versions:  apptainer exec rnaseq-copilot.sif cat /opt/app/IMAGE_VERSIONS.txt
+    See containers/README.md.

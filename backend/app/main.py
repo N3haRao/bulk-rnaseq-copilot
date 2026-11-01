@@ -9,12 +9,12 @@ import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 
-from . import code_bundle, codebank, report, results, secrets_store, uploads
+from . import code_bundle, codebank, extras, report, results, secrets_store, uploads
 from .config import settings
 from .jobs import jobs
 from .chat import model as chat_model
@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
     settings.jobs_dir.mkdir(parents=True, exist_ok=True)
     jobs.recover()
+    extras.extras.recover(settings.jobs_dir)
     yield
 
 
@@ -453,6 +454,79 @@ def chat_file(job_id: str, conv_id: str, rel: str, download: bool = False):
         _not_found("File")
     return FileResponse(p, filename=p.name if download else None,
                         content_disposition_type="attachment" if download else "inline")
+
+
+# ---- Optional analyses: splicing and isoforms ---------------------------------------------------
+@app.get("/api/runs/{job_id}/extras")
+def list_extras(job_id: str) -> dict:
+    _run_dir_or_404(job_id)
+    return {"available": extras.available(), "analyses": extras.all_for(jobs.job_dir(job_id))}
+
+
+@app.post("/api/runs/{job_id}/extras/splicing")
+def start_splicing(job_id: str, files: list[UploadFile] = File(...), b1_group: str = Form("test"),
+                   count_type: str = Form("JCEC"), fdr_cutoff: float = Form(0.05), delta_psi_cutoff: float = Form(0.1),
+                   min_reads_per_sample: float = Form(10)) -> dict:
+    run_dir = _run_dir_or_404(job_id)
+    if "splicing" not in extras.available():
+        raise HTTPException(status_code=409, detail="This code bank version has no splicing module (v0.3.0 or newer needed).")
+    try:
+        return extras.extras.start_splicing(jobs.load(job_id), jobs.job_dir(job_id), run_dir,
+                                            [(f.filename or "file", f.file) for f in files], b1_group=b1_group,
+                                            count_type=count_type, fdr_cutoff=fdr_cutoff, delta_psi_cutoff=delta_psi_cutoff,
+                                            min_reads_per_sample=min_reads_per_sample)
+    except extras.ExtraError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/runs/{job_id}/extras/isoforms")
+def start_isoforms(job_id: str, quant_zip: UploadFile = File(...), annotation: UploadFile | None = File(None),
+                   min_delta_usage: float = Form(0.1), dui_alpha: float = Form(0.05)) -> dict:
+    run_dir = _run_dir_or_404(job_id)
+    if "isoforms" not in extras.available():
+        raise HTTPException(status_code=409, detail="This code bank version has no isoform module (v0.4.0 or newer needed).")
+    ann = (annotation.filename or "annotation", annotation.file) if annotation is not None and annotation.filename else None
+    try:
+        return extras.extras.start_isoforms(jobs.load(job_id), jobs.job_dir(job_id), run_dir,
+                                            (quant_zip.filename or "quant.zip", quant_zip.file), ann,
+                                            min_delta_usage=min_delta_usage, dui_alpha=dui_alpha)
+    except extras.ExtraError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+def _extra_dir(job_id: str, module: str) -> Path:
+    _run_dir_or_404(job_id)
+    try:
+        d = extras.latest(jobs.job_dir(job_id), module)
+    except KeyError:
+        d = None
+    if d is None:
+        _not_found("Analysis")
+    return d
+
+
+@app.get("/api/runs/{job_id}/extras/{module}")
+def get_extra(job_id: str, module: str) -> dict:
+    return extras.overview(_extra_dir(job_id, module))
+
+
+@app.get("/api/runs/{job_id}/extras/{module}/files/{rel:path}")
+def extra_file(job_id: str, module: str, rel: str, download: bool = False):
+    try:
+        p = extras.safe_file(_extra_dir(job_id, module), rel)
+    except KeyError:
+        _not_found("File")
+    return FileResponse(p, filename=p.name if download else None,
+                        content_disposition_type="attachment" if download else "inline")
+
+
+@app.get("/api/runs/{job_id}/extras/{module}/download")
+def extra_download(job_id: str, module: str):
+    try:
+        z = extras.bundle(_extra_dir(job_id, module))
+    except KeyError:
+        raise HTTPException(status_code=409, detail="No results yet.")
+    return FileResponse(z, filename=z.name, media_type="application/zip")
 
 
 @app.get("/api/runs/{job_id}/code")

@@ -1,0 +1,30 @@
+# =============================================================================
+# ollama.def  --  the open-weight model server (Ollama) for the site's assistants
+# =============================================================================
+# The setup chat and the report writer use Qwen3 through Ollama. Models are NOT
+# inside the image: keep them in a folder you bind to /models (pull once with
+# containers/ada/pull_model.sh), so the image stays small and models are shared.
+#
+#   apptainer instance start --nv --bind MODELS_DIR:/models ollama.sif ollama
+#   (drop --nv on a node without a GPU: qwen3:8b then runs on the CPU, slowly)
+# =============================================================================
+Bootstrap: docker
+From: ollama/ollama:0.9.0
+
+%environment
+    export OLLAMA_MODELS=${OLLAMA_MODELS:-/models}
+    export OLLAMA_HOST=${OLLAMA_HOST:-127.0.0.1:11434}
+    export OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
+
+%startscript
+    exec /bin/ollama serve
+
+%runscript
+    exec /bin/ollama "$@"
+
+%labels
+    org.opencontainers.image.title Ollama for the RNA-seq analysis site
+
+%help
+    Ollama model server. Start:  apptainer instance start --nv --bind MODELS_DIR:/models ollama.sif ollama
+    Pull a model (needs internet):  apptainer run --bind MODELS_DIR:/models ollama.sif pull qwen3:8b  (with a server running)

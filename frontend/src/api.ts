@@ -297,6 +297,31 @@ export type ChatEvent =
   | { type: "error"; text: string }
   | { type: "done" };
 
+// ---- Optional analyses: splicing and isoforms ----
+export type ExtraModule = "splicing" | "isoforms";
+
+export interface ExtraAnalysis {
+  id: string;
+  module: ExtraModule;
+  title: string;
+  status: "queued" | "running" | "success" | "success_with_errors" | "failed" | "interrupted";
+  created: string;
+  finished: string | null;
+  error: string | null;
+  note: string | null;
+  settings: Record<string, unknown>;
+  inputs: string[];
+  steps: { name: string; description: string; status: string }[];
+  run_id?: string;
+  figures?: Figure[];
+  methods_md?: string | null;
+  summary?: Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  top?: Record<string, string>[];
+  top_dei?: Record<string, string>[];
+  tables?: string[];
+  validation?: { checks: Check[] } | null;
+}
+
 export interface KeyStatus {
   configured: boolean;
   source: "environment" | "keychain" | "file" | null;
@@ -396,6 +421,22 @@ export const api = {
     request<DeTable>(`/api/runs/${id}/de?` + new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]))),
   enrichment: (id: string, folder: string, kind: string) =>
     request<{ rows: Record<string, string>[]; figure: string | null }>(`/api/runs/${id}/enrichment/${folder}/${kind}`),
+  extras: (jobId: string) =>
+    request<{ available: Partial<Record<ExtraModule, string>>; analyses: Record<ExtraModule, ExtraAnalysis | null> }>(`/api/runs/${jobId}/extras`),
+  extra: (jobId: string, module: ExtraModule) => request<ExtraAnalysis>(`/api/runs/${jobId}/extras/${module}`),
+  startSplicing: (jobId: string, files: File[], opts: Record<string, string>) => {
+    const form = new FormData();
+    files.forEach((f) => form.append("files", f));
+    Object.entries(opts).forEach(([k, v]) => form.append(k, v));
+    return request<ExtraAnalysis>(`/api/runs/${jobId}/extras/splicing`, { method: "POST", body: form });
+  },
+  startIsoforms: (jobId: string, quantZip: File, annotation: File | null, opts: Record<string, string>) => {
+    const form = new FormData();
+    form.append("quant_zip", quantZip);
+    if (annotation) form.append("annotation", annotation);
+    Object.entries(opts).forEach(([k, v]) => form.append(k, v));
+    return request<ExtraAnalysis>(`/api/runs/${jobId}/extras/isoforms`, { method: "POST", body: form });
+  },
   options: () =>
     request<{ parameters: Record<string, { type: string; values?: string[]; default: unknown; description?: string }> }>("/api/options"),
 };
@@ -408,3 +449,6 @@ export const fileUrl = (jobId: string, path: string, download = false) =>
 
 export const codeZipUrl = (jobId: string, includeData = false) =>
   `/api/runs/${jobId}/code` + (includeData ? "?include_data=true" : "");
+
+export const extraFileUrl = (jobId: string, module: ExtraModule, path: string, download = false) =>
+  `/api/runs/${jobId}/extras/${module}/files/${path}` + (download ? "?download=true" : "");

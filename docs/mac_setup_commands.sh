@@ -101,6 +101,8 @@ ls codebank                      # should list scripts, R, config, ... (the code
 cd ~/projects/bulk-rnaseq-copilot/codebank
 Rscript scripts/00_setup_environment.R
 Rscript scripts/00_setup_environment.R --check     # every "required" package should have a version
+# Packages for the optional isoform analysis (DEI / DUI) and for comparing human with mouse studies (babelgene), about 5 minutes:
+Rscript -e 'if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager"); BiocManager::install(c("DEXSeq", "stageR", "tximport", "babelgene"), update = FALSE, ask = FALSE)'
 # TROUBLESHOOTING
 # - If R asks "Update all/some/none? [a/s/n]" or to pick a mirror: type  n  (or 1) and press Enter.
 # - A package fails to compile ("clang: error", "gfortran not found"):
@@ -129,7 +131,11 @@ ls data/example                  # should list airway, gse60450, pasilla
 Rscript tests/run_tests.R
 # All lines should say [PASS]. If only "enrichment" fails, see the msigdbr note in step 6,
 # or run without it:  Rscript tests/run_tests.R --skip_enrichment
-
+#
+# Optional: the splicing and isoform modules (1-3 minutes each; should end with "0 failed"):
+Rscript splicing/tests/run_splicing_tests.R | tail -3
+Rscript isoforms/tests/run_isoform_tests.R | tail -3
+# (later/tests/run_later_tests.R needs fastp, STAR, Salmon, rMATS: run those on Ada, see docs/ada_setup_commands.sh)
 
 # -----------------------------------------------------------------------------
 # STEP 8. Start the website
@@ -142,8 +148,46 @@ cd ~/projects/bulk-rnaseq-copilot
 # It should also say "Assistant: Ollama is running".
 # Keep this Terminal window open while you use the site. Stop it with Ctrl+C.
 #
-# Try it: "Or try an example" -> gse60450 -> "Use this dataset" -> "Run analysis".
-# On your own upload, the suggested setup should be tagged "Assistant · qwen3:8b".
+# THE START PAGE IS A CHAT
+#   1. In "Describe your experiment", write in plain words what you have and what you
+#      want, e.g. "Mouse mammary gland, luminal vs basal cells, 3 mice per group,
+#      two batches. Account for batch and colour the PCA by mouse."
+#   2. Click "Attach counts table" and "Attach sample table", then "Send".
+#   3. On the next page the setup assistant replies (left) and fills in the
+#      "Proposed setup" card (right). The card is checked automatically.
+#   4. Ask for changes in the chat ("also account for sex", "use padj below 0.01",
+#      "label Krt5 and Elf5 on the volcano plot"), or open "Edit the setup directly".
+#   5. Click "Approve and run". Nothing runs before you approve.
+#   The assistant can change the code bank's settings, never its methods: if you ask
+#   for edgeR, a t-test, etc., it says so and keeps DESeq2 / fgsea.
+#
+# Try it with an example: "Or try an example" -> gse60450 -> "Use this dataset"
+# (your description, if you typed one, is used) -> "Approve and run".
+# The setup assistant's tag should say "Assistant · qwen3:8b".
+#
+# Or import a public dataset from GEO: "Or import a public dataset from GEO" -> type a
+# GSE accession (e.g. GSE60450) -> "Look up" -> check the samples and the counts option
+# (NCBI's uniform counts are preselected when GEO has them) -> "Import and set up".
+# The study's description goes to the setup chat, which proposes the groups.
+#
+# Compare studies (top bar, or "Compare with another study" on a finished run): tick two
+# or more finished analyses (and/or add a paper's DE table), set the cutoffs, click
+# "Compare". You get fold-change agreement, genes significant in both (by direction),
+# RRHO maps and shared pathways, plus a report and the code. Needs code bank v0.5.0.
+#
+# On a finished run you also get: "Download PowerPoint" (the report as slides) and
+# "All code used (.zip)" (code bank version, settings, rerun script and any code the
+# chat ran: for a paper's supplementary material).
+#
+# OPTIONAL: SPLICING & ISOFORMS (tab on a finished run)
+#   - Alternative splicing: upload the rMATS output tables (SE.MATS.JCEC.txt, ...) or a .zip
+#     of rMATS's output folder; choose which group was rMATS sample 1 (--b1).
+#   - Transcript isoforms: upload a .zip of Salmon output folders (one folder per sample,
+#     named exactly like the samples, each with quant.sf) and, unless the transcript names
+#     contain the gene (GENCODE), the GTF the Salmon index was built from.
+#   Both run in the background (a few minutes); results appear in the tab and are added to
+#   the report, the PowerPoint, the code .zip and new chats. rMATS and Salmon output come
+#   from the FASTQ files: make them on Ada (docs/ada_setup_commands.sh, step 8).
 #
 # TROUBLESHOOTING
 # - "permission denied: ./start.sh":  chmod +x start.sh  then  ./start.sh
@@ -155,14 +199,47 @@ cd ~/projects/bulk-rnaseq-copilot
 #       RSCRIPT=/Library/Frameworks/R.framework/Resources/bin/Rscript ./start.sh
 # - npm errors while building: check  node --version  (20 or newer), then
 #       rm -rf frontend/node_modules frontend/dist && ./start.sh
-# - The suggestion says "Built-in rules" and "Assistant not used: ...":
+# - The setup assistant is tagged "Built-in rules" and says it is not available
+#   (the start page also says "The setup assistant is not running"):
 #       Ollama is not running ->  brew services restart ollama
 #       model missing         ->  ollama pull qwen3:8b
-#   then reload the page. (The site still works with the rules.)
-# - The suggestion takes very long the first time: the model loads into memory
-#   (up to a minute). Later answers are faster.
+#   then click "Start over" in the setup chat, or send your message again.
+#   (Without it, the rules still propose a setup you can edit and approve.)
+# - The first answer takes very long: the model loads into memory (up to a minute).
+#   Later answers are faster.
+# - The assistant replies "I could not make a valid setup from that request": the
+#   change would make the design impossible to estimate (e.g. a covariate that lines
+#   up with the groups, or too few samples left). Rephrase, or edit the card directly.
+# - "Send" stays grey on the start page: both tables must be attached.
+# - The setup card has no colour/shape options under "Edit the setup directly": the
+#   code bank is older than v0.2.0 ->  git submodule update --init --recursive
+# - "Download PowerPoint" fails: run  ./start.sh  again (it installs python-pptx).
+# - Splicing & isoforms tab says the code bank has no modules: update (step 10).
+# - Isoform analysis fails with "Package 'DEXSeq' is not installed": the extra packages in step 6.
+# - "No quant.sf for sample(s) ...": the folders inside the .zip must be named exactly like the
+#   samples in your sample table (e.g. WT1/quant.sf, WT2/quant.sf, ...).
+# - "The transcript names do not include their gene": also upload the GTF (or a CSV with
+#   transcript_id,gene_id) that your Salmon index was built from.
+# - GEO import says "Could not reach GEO": check the internet connection (the site
+#   downloads from ftp.ncbi.nlm.nih.gov and www.ncbi.nlm.nih.gov), then try again.
+# - GEO import says no count table was found: the study only has raw FASTQ files or
+#   normalised values (FPKM/TPM). Counts must be made from the FASTQ files (Ada, step 8).
+# - GEO import says columns "could not be matched": the authors' table uses column names
+#   that are not in GEO's sample descriptions. Download it, rename the columns to the GSM
+#   IDs, and upload it with a sample table instead.
+# - Compare studies says the code bank has no compare module: update the code bank (step 10).
+# - A comparison warns that fold changes are negatively correlated: one study compared the
+#   groups the other way round; tick "Flip direction" for it and compare again.
+# - "Matching human and mouse genes needs the 'babelgene' package":
+#       Rscript -e 'install.packages("babelgene")'
 # - An example says "Not prepared yet": run step 7.
-# - No "Report (HTML)" button after a run: pandoc is missing ->  brew install pandoc
+# - "Download PDF" says Chromium is not installed (or the first start could not install it):
+#       cd ~/projects/agentic-omics-testbed
+#       backend/.venv/bin/python -m playwright install chromium
+#   Meanwhile: "Open report", then File -> Print -> Save as PDF.
+# - The report text says "Written from the results by fixed rules": the assistant was not
+#   running when the report was written. Start Ollama, then click "Rewrite" on the run page.
+# - No "Technical report (code bank)" link after a run: pandoc is missing ->  brew install pandoc
 # - Gene names show as numbers (Entrez IDs) and pathways are skipped: the
 #   annotation packages are missing -> run step 6 again and check org.Mm.eg.db / org.Hs.eg.db.
 # - A run fails: the red message on the run page says why. The full logs are in

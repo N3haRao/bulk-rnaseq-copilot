@@ -407,13 +407,13 @@ export default function Dataset() {
           <div className="grid-2">
             <label className="field">
               <span>Adjusted p-value cutoff</span>
-              <input type="number" step="0.01" min="0.0001" max="1"
+              <input type="number" step="any" min="0.0001" max="1"
                 value={(settings.advanced.padj_cutoff as number | undefined) ?? (params.padj_cutoff?.default as number) ?? 0.05}
                 onChange={(e) => setAdvanced("padj_cutoff", e.target.value === "" ? undefined : Number(e.target.value))} />
             </label>
             <label className="field">
               <span>Minimum |log2 fold change|</span>
-              <input type="number" step="0.1" min="0"
+              <input type="number" step="any" min="0"
                 value={(settings.advanced.log2fc_cutoff as number | undefined) ?? (params.log2fc_cutoff?.default as number) ?? 1}
                 onChange={(e) => setAdvanced("log2fc_cutoff", e.target.value === "" ? undefined : Number(e.target.value))} />
               <small>1 = at least a 2-fold change. 0.58 ≈ 1.5-fold.</small>

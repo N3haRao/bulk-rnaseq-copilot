@@ -322,6 +322,67 @@ export interface ExtraAnalysis {
   validation?: { checks: Check[] } | null;
 }
 
+// ---- Cross-study comparison ----
+export interface CompareRun { id: string; label: string; dataset: string | null; comparison: string; created: string }
+export interface StudySpec {
+  kind: "run" | "table"; label: string; flip?: boolean; job_id?: string; file?: number;
+  organism?: string; comparison?: string; dataset?: string | null; file_name?: string;
+}
+export interface ComparisonItem { id: string; title: string; status: string; created: string; finished: string | null; studies: StudySpec[] }
+export interface Corr { r: number | null; p: number | null; n: number }
+export interface Fisher { p: number | null; odds_ratio: number | null }
+export interface RrhoBest { quadrant: string; overlap: number; expected: number; padj: number; neg_log10_padj: number; top_genes: string[]; meaning: string; genes_file?: string }
+export interface PathwayPair {
+  collection: string; n_pathways: number; spearman_NES: number | null; n_significant_a: number; n_significant_b: number;
+  n_significant_both: number; n_same_direction: number; n_opposite_direction: number; figure: string | null;
+  top_shared: { pathway: string; NES_a: number; NES_b: number }[];
+}
+export interface ComparePair {
+  study_a: string; study_b: string; n_shared_genes: number; n_significant_a: number; n_significant_b: number;
+  n_significant_both: number; n_same_direction: number; n_opposite_direction: number;
+  up_up: number; down_down: number; up_down: number; down_up: number; expected_up_up: number; expected_down_down: number;
+  fisher_up_up: Fisher; fisher_down_down: Fisher; jaccard: number | null; direction_agreement: number | null;
+  pearson_log2FC: Corr; spearman_log2FC: Corr; spearman_log2FC_significant_either: Corr;
+  top_shared_up: { gene: string; log2FC_a: number; log2FC_b: number }[];
+  top_shared_down: { gene: string; log2FC_a: number; log2FC_b: number }[];
+  top_opposite: { gene: string; log2FC_a: number; log2FC_b: number }[];
+  rrho: { status?: string; reason?: string; pattern?: string; best?: Record<string, RrhoBest>; n_genes?: number };
+  pathways: PathwayPair[];
+  figures: { scatter: string | null; overlap: string | null; rrho: string | null };
+  tables: string[];
+}
+export interface StudyResult {
+  label: string; source: string; comparison: string; organism: string; gene_id_type: string; flipped: boolean;
+  n_genes: number; n_matched: number; n_significant: number; n_up: number; n_down: number;
+}
+export interface Comparison extends ComparisonItem {
+  error: string | null; settings: { padj_cutoff: number; log2fc_cutoff: number; compare_pathways: boolean };
+  steps: { name: string; description: string; status: string }[];
+  run_id?: string; study_results?: StudyResult[]; match_method?: string; rank_by?: string; significance_rule?: string;
+  n_genes_in_all_studies?: number; pairs?: ComparePair[]; figures?: { path: string; title: string; caption: string }[];
+  pathway_collections?: { collection: string; n_pathways: number; n_significant_in_two_or_more: number;
+    n_consistent_in_two_or_more: number; heatmap: string | null; table: string | null }[];
+  pathways_status?: { status: string; reason?: string; gsea_source?: Record<string, string>; padj_cutoff?: number } | null;
+  recurrent_genes?: Record<string, string>[]; warnings?: string[]; methods_md?: string | null; tables?: string[];
+  validation?: { checks: Check[] } | null;
+}
+
+// ---- Import from GEO ----
+export interface GeoInfo {
+  accession: string;
+  title: string;
+  summary: string;
+  overall_design: string;
+  organisms: string[];
+  library_strategies: string[];
+  n_samples: number;
+  url: string;
+  samples: { geo_accession: string; title: string; characteristics: Record<string, string> }[];
+  counts_options: { id: string; label: string; source: "ncbi" | "supplementary"; file: string; likely: boolean }[];
+  recommended: string | null;
+  warnings: string[];
+}
+
 export interface KeyStatus {
   configured: boolean;
   source: "environment" | "keychain" | "file" | null;
@@ -421,6 +482,9 @@ export const api = {
     request<DeTable>(`/api/runs/${id}/de?` + new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]))),
   enrichment: (id: string, folder: string, kind: string) =>
     request<{ rows: Record<string, string>[]; figure: string | null }>(`/api/runs/${id}/enrichment/${folder}/${kind}`),
+  geoInspect: (accession: string) => request<GeoInfo>("/api/geo/inspect", json({ accession })),
+  geoImport: (accession: string, countsOption: string) =>
+    request<Upload & { description: string }>("/api/geo/import", json({ accession, counts_option: countsOption })),
   extras: (jobId: string) =>
     request<{ available: Partial<Record<ExtraModule, string>>; analyses: Record<ExtraModule, ExtraAnalysis | null> }>(`/api/runs/${jobId}/extras`),
   extra: (jobId: string, module: ExtraModule) => request<ExtraAnalysis>(`/api/runs/${jobId}/extras/${module}`),
@@ -437,6 +501,15 @@ export const api = {
     Object.entries(opts).forEach(([k, v]) => form.append(k, v));
     return request<ExtraAnalysis>(`/api/runs/${jobId}/extras/isoforms`, { method: "POST", body: form });
   },
+  comparisons: () => request<{ available: boolean; comparisons: ComparisonItem[]; runs: CompareRun[] }>("/api/comparisons"),
+  comparison: (id: string) => request<Comparison>(`/api/comparisons/${id}`),
+  startComparison: (spec: { title?: string; studies: StudySpec[]; padj_cutoff: number; log2fc_cutoff: number; compare_pathways: boolean },
+    files: File[]) => {
+    const form = new FormData();
+    form.append("spec", JSON.stringify(spec));
+    files.forEach((f) => form.append("files", f));
+    return request<Comparison>("/api/comparisons", { method: "POST", body: form });
+  },
   options: () =>
     request<{ parameters: Record<string, { type: string; values?: string[]; default: unknown; description?: string }> }>("/api/options"),
 };
@@ -452,3 +525,6 @@ export const codeZipUrl = (jobId: string, includeData = false) =>
 
 export const extraFileUrl = (jobId: string, module: ExtraModule, path: string, download = false) =>
   `/api/runs/${jobId}/extras/${module}/files/${path}` + (download ? "?download=true" : "");
+
+export const compareFileUrl = (id: string, path: string, download = false) =>
+  `/api/comparisons/${id}/files/${path}` + (download ? "?download=true" : "");

@@ -123,9 +123,9 @@ function SplicingCard({ job, a, onStarted }: { job: Job; a: ExtraAnalysis | null
               </select>
             </label>
             <label className="field"><span>FDR cutoff</span>
-              <input type="number" step="0.01" min="0.001" max="1" value={fdr} onChange={(e) => setFdr(e.target.value)} /></label>
+              <input type="number" step="any" min="0.001" max="1" value={fdr} onChange={(e) => setFdr(e.target.value)} /></label>
             <label className="field"><span>Minimum |dPSI|</span>
-              <input type="number" step="0.05" min="0" max="0.9" value={dpsi} onChange={(e) => setDpsi(e.target.value)} />
+              <input type="number" step="any" min="0" max="0.9" value={dpsi} onChange={(e) => setDpsi(e.target.value)} />
               <small>0.1 = 10 percentage points of inclusion.</small></label>
             <label className="field"><span>Minimum reads per sample</span>
               <input type="number" step="1" min="0" value={reads} onChange={(e) => setReads(e.target.value)} /></label>
@@ -193,10 +193,10 @@ function IsoformsCard({ job, a, onStarted }: { job: Job; a: ExtraAnalysis | null
           </label>
           <div className="grid-2">
             <label className="field"><span>Minimum change in usage</span>
-              <input type="number" step="0.05" min="0" max="0.9" value={delta} onChange={(e) => setDelta(e.target.value)} />
+              <input type="number" step="any" min="0" max="0.9" value={delta} onChange={(e) => setDelta(e.target.value)} />
               <small>0.1 = the transcript's share of its gene changes by 10 percentage points.</small></label>
             <label className="field"><span>FDR for isoform usage</span>
-              <input type="number" step="0.01" min="0.001" max="1" value={alpha} onChange={(e) => setAlpha(e.target.value)} /></label>
+              <input type="number" step="any" min="0.001" max="1" value={alpha} onChange={(e) => setAlpha(e.target.value)} /></label>
           </div>
           {err && <Notice kind="fail">{err}</Notice>}
           <div className="row">

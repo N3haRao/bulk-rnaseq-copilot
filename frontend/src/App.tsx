@@ -4,6 +4,8 @@ import Dataset from "./pages/Dataset";
 import Run from "./pages/Run";
 import Runs from "./pages/Runs";
 import Settings from "./pages/Settings";
+import Compare from "./pages/Compare";
+import Comparison from "./pages/Comparison";
 
 export default function App() {
   return (
@@ -13,6 +15,7 @@ export default function App() {
         <nav>
           <NavLink to="/" end>New analysis</NavLink>
           <NavLink to="/runs">My analyses</NavLink>
+          <NavLink to="/compare">Compare studies</NavLink>
           <NavLink to="/settings">Settings</NavLink>
         </nav>
       </header>
@@ -22,6 +25,8 @@ export default function App() {
           <Route path="/datasets/:uploadId" element={<Dataset />} />
           <Route path="/runs" element={<Runs />} />
           <Route path="/runs/:jobId" element={<Run />} />
+          <Route path="/compare" element={<Compare />} />
+          <Route path="/compare/:id" element={<Comparison />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<p>Page not found. <Link to="/">Start a new analysis</Link>.</p>} />
         </Routes>

@@ -96,6 +96,33 @@ A finished run has a **Splicing & isoforms** tab with two optional analyses. Bot
 
 Analyses run in the background, one at a time (`backend/app/extras.py`, files under `data/jobs/<run>/extras/`). When one finishes, it is added to the HTML/PDF report and the PowerPoint, to the code .zip (`extra_analyses/<module>/` with its settings and a rerun script), and to the workspace of new chats. Tests: `backend/tests/test_extras.py`, which runs the real R modules and is skipped when R lacks DESeq2, DEXSeq, stageR, tximport or fgsea.
 
+### Import from GEO by GSE ID
+
+The start page can import a public dataset straight from GEO: type a GSE accession (e.g. `GSE60450`), click **Look up**, check the samples, pick the counts and click **Import and set up** (`backend/app/geo.py`, `POST /api/geo/inspect` and `/api/geo/import`).
+
+- **Counts:** NCBI's uniformly processed raw counts (the same files GEOquery's `getRNASeqData` reads, for human GRCh38.p13 and mouse GRCm39) are offered first and recommended: every sample went through one pipeline, which makes studies easier to compare. When NCBI has none, the authors' supplementary count tables are offered instead (normalised tables, DE results and `_RAW.tar` are left out). Their column names are matched to the GEO samples by GSM, title or description, and the import stops with an explanation if a column cannot be matched unambiguously.
+- **Sample table:** built from the series matrix. Each `characteristics` entry ("cell type: basal") becomes a column; columns that are the same for every sample are dropped; the GSM and title are kept. The study's title, summary and overall design are passed to the setup chat as the first message, so the assistant reads GEO's free text and proposes the groups for you to approve.
+- Downloads are cached under `data/geo/<GSE>/`. The server needs to reach `ftp.ncbi.nlm.nih.gov` and `www.ncbi.nlm.nih.gov`.
+- Tests: `backend/tests/test_geo.py` (GEO's formats from a mock server; no network needed).
+
+To compare an imported study with your own, run both and use **Compare studies** (below).
+
+### Compare studies
+
+The **Compare studies** page (also "Compare with another study" on a finished run) asks whether two to eight studies agree. Studies are finished analyses on this site (your own or GEO imports) and, optionally, published DE tables (DESeq2, edgeR or limma column names). It runs the code bank's `compare/` module (v0.5.0 or newer; `backend/app/comparisons.py`, `/api/comparisons`).
+
+- Studies are compared by their **results**, never by merging raw counts: each keeps its own normalisation and design.
+- One significance rule for every study (padj and |log2FC| set on the page); "Flip direction" reverses a study that compared the groups the other way round (the module warns when fold changes are negatively correlated).
+- Genes are matched by ID, Entrez ID or symbol; human with mouse through one-to-one orthologs (babelgene).
+- Results:
+  - fold-change correlation;
+  - overlap of significant genes by direction (up/up, down/down, opposite), with Fisher's exact tests and the overlap expected by chance;
+  - stratified RRHO maps (threshold-free);
+  - pathway comparison from each run's GSEA (NES heatmap, shared pathways);
+  - genes significant in several studies.
+- Downloads: a self-contained HTML report (and PDF), all results (.zip), and the code (.zip: code bank at its commit, each study's results as compared, and `run_comparison.sh` to rerun it).
+- Comparisons are kept under `data/comparisons/`. Tests: `backend/tests/test_comparisons.py` (needs the compare module and R with fgsea and babelgene).
+
 ### Measuring the assistant
 
 `backend/eval/setup_cases.yaml` holds 27 sample tables with the setup a bioinformatician would choose (paired designs, confounded batches, controls named shNT, DMSO, sham, pre, normoxia...). Score a model against it:
@@ -156,9 +183,13 @@ backend/app/
   uploads.py          stores uploads; runs step 01 (input check) on demand
   jobs.py             runs the full pipeline in the background, one at a time; progress from the run log
   results.py          reads a finished run folder for the results tabs
+  extras.py           optional splicing / isoform analyses on a finished run
+  geo.py              import a public dataset from GEO by GSE ID
+  comparisons.py      cross-study comparison of finished runs and published tables (compare module)
 backend/eval/         benchmark of sample tables with expected setups, and the scoring script
 frontend/src/
-  pages/              Home (upload / examples), Dataset (check & set up), Run (progress & results), Runs
+  pages/              Home (upload / GEO / examples), Dataset (check & set up), Run (progress & results), Runs,
+                      Compare (pick studies) and Comparison (results)
   components/         shared UI, gene table, pathways
 codebank/             git submodule: rnaseq-codebank
 ```

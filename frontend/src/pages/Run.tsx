@@ -204,6 +204,7 @@ function Downloads({ jobId, results, report, busy, error, onRewrite }: {
         <strong>Code:</strong>
         <a className="button secondary" href={codeZipUrl(jobId)}>All code used (.zip)</a>
         <a className="button secondary" href={codeZipUrl(jobId, true)}>Code + input files (.zip)</a>
+        <Link className="button secondary" to={`/compare?with=${jobId}`}>Compare with another study</Link>
         <span className="muted small">
           For a paper's code availability / supplementary material: the code bank at the exact version used, every
           setting, the software versions, a script that reruns the analysis, and any code the chat assistant ran.
@@ -465,4 +466,3 @@ function MethodsTab({ job, r }: { job: Job; r: Results }) {
     </>
   );
 }
-      

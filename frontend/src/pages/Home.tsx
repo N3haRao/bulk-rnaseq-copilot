@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, type Example, type Job } from "../api";
+import { api, type Example, type GeoInfo, type Job } from "../api";
 import { Badge, Notice, Stepper } from "../components/common";
 import { fmtTime } from "../format";
 
@@ -107,6 +107,8 @@ export default function Home() {
         </p>
       </section>
 
+      <GeoImport text={text} busy={busy} setBusy={setBusy} />
+
       <section className="card">
         <h2>Or try an example</h2>
         <p className="muted small">Public datasets with well-known results, to see how the site works. Your description above, if any, is used.</p>
@@ -143,5 +145,85 @@ export default function Home() {
         </section>
       )}
     </>
+  );
+}
+
+function GeoImport({ text, busy, setBusy }: { text: string; busy: string | null; setBusy: (b: string | null) => void }) {
+  const navigate = useNavigate();
+  const [acc, setAcc] = useState("");
+  const [info, setInfo] = useState<GeoInfo | null>(null);
+  const [option, setOption] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  async function lookUp(ev: React.FormEvent) {
+    ev.preventDefault();
+    setBusy("geo-inspect"); setErr(null); setInfo(null);
+    try {
+      const i = await api.geoInspect(acc.trim());
+      setInfo(i);
+      setOption(i.recommended ?? "");
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(null); }
+  }
+
+  async function doImport() {
+    if (!info || !option) return;
+    setBusy("geo-import"); setErr(null);
+    try {
+      const up = await api.geoImport(info.accession, option);
+      const own = text.trim();
+      navigate(`/datasets/${up.id}`, { state: { firstMessage: own ? `${up.description}\n\n${own}` : up.description } });
+    } catch (e) { setErr((e as Error).message); setBusy(null); }
+  }
+
+  const keys = info ? Array.from(new Set(info.samples.flatMap((s) => Object.keys(s.characteristics)))) : [];
+  return (
+    <section className="card">
+      <h2>Or import a public dataset from GEO</h2>
+      <form onSubmit={lookUp} className="row">
+        <input type="text" value={acc} onChange={(e) => setAcc(e.target.value)} placeholder="GSE accession, e.g. GSE60450"
+          aria-label="GEO series accession" style={{ maxWidth: 260 }} />
+        <button type="submit" className="secondary" disabled={!/^\s*GSE\d+\s*$/i.test(acc) || busy !== null}>
+          {busy === "geo-inspect" ? <><span className="spinner" /> Looking up…</> : "Look up"}
+        </button>
+        <span className="muted small">The sample descriptions from GEO become the sample table; the assistant proposes the groups.</span>
+      </form>
+      {err && <Notice kind="fail">{err}</Notice>}
+      {info && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ margin: "0 0 4px" }}><strong><a href={info.url} target="_blank" rel="noreferrer">{info.accession}</a>: {info.title}</strong></p>
+          <p className="muted small" style={{ margin: 0 }}>
+            {info.n_samples} samples · {info.organisms.join(", ") || "organism not stated"} · {info.library_strategies.join(", ")}
+          </p>
+          {info.summary && <details className="small"><summary className="muted">Summary</summary><p>{info.summary}</p>
+            {info.overall_design && <p><strong>Design:</strong> {info.overall_design}</p>}</details>}
+          {info.warnings.map((w) => <Notice key={w} kind="warning">{w}</Notice>)}
+          {info.samples.length > 0 && (
+            <div className="table-wrap" style={{ maxHeight: 220, marginTop: 8 }}>
+              <table>
+                <thead><tr><th>Sample</th><th>Title</th>{keys.map((k) => <th key={k}>{k}</th>)}</tr></thead>
+                <tbody>{info.samples.slice(0, 50).map((s) => (
+                  <tr key={s.geo_accession}><td>{s.geo_accession}</td><td>{s.title}</td>{keys.map((k) => <td key={k}>{s.characteristics[k] ?? ""}</td>)}</tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+          {info.counts_options.length > 0 && (
+            <>
+              <label className="field" style={{ marginTop: 10 }}>
+                <span>Counts</span>
+                <select value={option} onChange={(e) => setOption(e.target.value)}>
+                  {info.counts_options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                </select>
+                <small>NCBI's counts come from one standard pipeline for every sample (best for comparing studies). Supplementary files are the
+                  authors' own tables; their column names are matched to the samples automatically.</small>
+              </label>
+              <button onClick={doImport} disabled={!option || busy !== null}>
+                {busy === "geo-import" ? <><span className="spinner" /> Downloading from GEO…</> : "Import and set up"}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </section>
   );
 }

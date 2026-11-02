@@ -22,14 +22,11 @@
 # -----------------------------------------------------------------------------
 # STEP 1. [Mac] Log in to Ada with ssh (and set up a short name + key, once)
 # -----------------------------------------------------------------------------
-# Off campus: connect to the BCM VPN first.
-ssh nehar@ada.nri.bcm.edu
-# Type your BCM password (nothing appears as you type). You are on an Ada login node
-# when the prompt changes. Type  exit  to come back to the Mac.
+ssh user@ada.nri.bcm.edu
 
 # Once, so you do not type the password every time and can write  ssh ada :
-[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -C "nehar@mac"       # press Enter at the questions
-ssh-copy-id nehar@ada.nri.bcm.edu                                       # asks for the password one last time
+[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -C "user@mac"       # press Enter at the questions
+ssh-copy-id user@ada.nri.bcm.edu                                       # asks for the password one last time
 cat >> ~/.ssh/config <<'EOF'
 
 Host ada
@@ -73,16 +70,12 @@ export COPILOT_DIR=$HOME/rnaseq-copilot
 echo "export COPILOT_DIR=$COPILOT_DIR" >> ~/.bashrc
 mkdir -p $COPILOT_DIR && cd $COPILOT_DIR
 
-git clone --recurse-submodules -b claude/brave-hawking-jy7mje https://github.com/N3haRao/agentic-omics-testbed.git
-cd agentic-omics-testbed && git log --oneline -1 && git -C codebank log --oneline -1
+git clone --recurse-submodules -b main https://github.com/N3haRao/bulk-rnaseq-copilot.git
+cd bulk-rnaseq-copilot && git log --oneline -1 && git -C codebank log --oneline -1
 # TROUBLESHOOTING
-# - GitHub asks for a password (private repository): use a personal access token as the
-#   password (github.com -> Settings -> Developer settings -> Personal access tokens), or
-#   make an ssh key on Ada (ssh-keygen -t ed25519), add ~/.ssh/id_ed25519.pub to GitHub
-#   (Settings -> SSH keys) and clone git@github.com:N3haRao/agentic-omics-testbed.git
 # - "Could not resolve host: github.com": the login node has no internet; ask the admins
 #   which node can reach the internet (often a "data transfer" node), or clone on the Mac and
-#   copy:  [Mac] scp -r ~/projects/agentic-omics-testbed ada:rnaseq-copilot/
+#   copy:  [Mac] scp -r ~/projects/bulk-rnaseq-copilot ada:rnaseq-copilot/
 
 
 # -----------------------------------------------------------------------------
@@ -131,7 +124,7 @@ exit
 # STEP 6. [Ada] Download the open-weight model (once; ~5 GB)
 # -----------------------------------------------------------------------------
 # Needs internet: run on the login node (or the node your admins point you to).
-cd $COPILOT_DIR/agentic-omics-testbed
+cd $COPILOT_DIR/bulk-rnaseq-copilot
 containers/ada/pull_model.sh                    # qwen3:8b into $COPILOT_DIR/models
 # A bigger model if Ada's GPUs allow it (better setup suggestions):
 #   containers/ada/pull_model.sh qwen3:14b      and later  OLLAMA_MODEL=qwen3:14b sbatch ...
@@ -147,7 +140,7 @@ containers/ada/pull_model.sh                    # qwen3:8b into $COPILOT_DIR/mod
 # [Ada] Optional: the Anthropic API key in a private file instead of the Settings page
 #   ( umask 077; echo "ANTHROPIC_API_KEY=sk-ant-..." > $COPILOT_DIR/secrets.env )
 # [Ada] Start the job (add -p <gpu partition> if needed; without a GPU remove "--gres" in the script):
-cd $COPILOT_DIR/agentic-omics-testbed
+cd $COPILOT_DIR/bulk-rnaseq-copilot
 sbatch containers/ada/site.slurm
 squeue -u nehar                                 # wait until the state is R (running)
 cat rnaseq-copilot-*.log                        # shows the node, the port and the ssh command
@@ -223,8 +216,8 @@ steps: [qc, read_length, star, salmon, gene_counts, rmats, splicing, sashimi, is
 EOF
 
 # 8d. Run it (hours, depending on the number of samples; the first run builds the indexes):
-CONFIG=$COPILOT_DIR/experiments/exp1/upstream.yaml BIND=$COPILOT_DIR sbatch $COPILOT_DIR/agentic-omics-testbed/containers/ada/upstream.slurm
-squeue -u nehar
+CONFIG=$COPILOT_DIR/experiments/exp1/upstream.yaml BIND=$COPILOT_DIR sbatch $COPILOT_DIR/bulk-rnaseq-copilot/containers/ada/upstream.slurm
+squeue -u user
 tail -f rnaseq-upstream-*.log                    # Ctrl+C stops watching (not the job)
 
 # 8e. Use the results on the site (through the tunnel of step 7, in the Mac's browser):
@@ -249,7 +242,7 @@ tail -f rnaseq-upstream-*.log                    # Ctrl+C stops watching (not th
 # -----------------------------------------------------------------------------
 # STEP 9. [Ada] Update to a new version
 # -----------------------------------------------------------------------------
-cd $COPILOT_DIR/agentic-omics-testbed
+cd $COPILOT_DIR/bulk-rnaseq-copilot
 git pull && git submodule update --init --recursive
 # then rebuild the site image (step 4, "app" only) and replace the old one:
 #   BUILD_OPTS="--fakeroot" containers/build.sh app && mv containers/build/rnaseq-copilot.sif $COPILOT_DIR/
@@ -259,7 +252,7 @@ git pull && git submodule update --init --recursive
 # -----------------------------------------------------------------------------
 # STEP 10. [Ada] Housekeeping
 # -----------------------------------------------------------------------------
-squeue -u nehar                                  # your running / waiting jobs
+squeue -u user                                  # your running / waiting jobs
 # scancel <job id>                               # stop one (the number squeue shows)
 du -sh $COPILOT_DIR/*                            # what uses space
 rm -rf $COPILOT_DIR/apptainer-cache $COPILOT_DIR/apptainer-tmp     # after a successful build

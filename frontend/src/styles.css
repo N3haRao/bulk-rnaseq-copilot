@@ -151,6 +151,8 @@ tr:last-child td { border-bottom: none; }
 .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
 
 .figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.figures.fill { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }   /* one figure keeps a column's width */
+.figures.wide { grid-template-columns: repeat(auto-fill, minmax(min(560px, 100%), 1fr)); }
 .figure { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 0; }
 .figure img { width: 100%; height: auto; display: block; background: #fff; border-radius: 4px; cursor: zoom-in; }
 .figure figcaption { margin-top: 8px; font-size: 0.88rem; color: var(--muted); }

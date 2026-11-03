@@ -16,7 +16,7 @@ Package versions are pinned in `env-r.yml`, `env-tools.yml` and `env-app.yml`, a
 You need Apptainer 1.2 or newer, git, about 25 GB of free disk, and internet access (Docker Hub, conda-forge, bioconda, Bioconductor, Zenodo for MSigDB, GEO for one example dataset). Build on Ada if Apptainer there allows building (`--fakeroot`), or on any Linux machine where you are root, then copy the `.sif` files.
 
 ```bash
-git clone --recurse-submodules -b claude/brave-hawking-jy7mje https://github.com/N3haRao/agentic-omics-testbed.git
+git clone --recurse-submodules -b main https://github.com/N3haRao/bulk-rnaseq-copilot.git
 cd agentic-omics-testbed
 containers/build.sh                          # both images -> containers/build/
 BUILD_OPTS="--fakeroot" containers/build.sh  # where you are not root (if the cluster allows it)

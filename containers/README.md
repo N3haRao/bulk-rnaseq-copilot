@@ -1,5 +1,7 @@
 # Containers for Ada (Apptainer)
 
+Step-by-step commands from logging in with ssh: [docs/ada_setup_commands.sh](../docs/ada_setup_commands.sh).
+
 Two images:
 
 | Image | Contains | Size |

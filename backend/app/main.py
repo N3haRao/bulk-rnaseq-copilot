@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 
-from . import code_bundle, codebank, extras, report, results, secrets_store, uploads
+from . import code_bundle, codebank, comparisons, extras, geo, report, results, secrets_store, uploads
 from .config import settings
 from .jobs import jobs
 from .chat import model as chat_model
@@ -30,6 +30,8 @@ async def lifespan(app: FastAPI):
     settings.jobs_dir.mkdir(parents=True, exist_ok=True)
     jobs.recover()
     extras.extras.recover(settings.jobs_dir)
+    comparisons.base_dir().mkdir(parents=True, exist_ok=True)
+    comparisons.comparisons.recover()
     yield
 
 
@@ -94,6 +96,35 @@ def template(kind: str):
     if not path or not path.exists():
         _not_found("Template")
     return FileResponse(path, filename=f"{kind}_template.csv", media_type="text/csv")
+
+
+# ---- Import from GEO ------------------------------------------------------------------------
+class GeoRequest(BaseModel):
+    accession: str = Field(min_length=4, max_length=20)
+    counts_option: str | None = None
+
+
+@app.post("/api/geo/inspect")
+def geo_inspect(body: GeoRequest) -> dict:
+    """What GEO has for this series: title, summary, samples and the count tables on offer."""
+    try:
+        return geo.inspect(body.accession)
+    except geo.GeoError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/geo/import")
+def geo_import(body: GeoRequest) -> dict:
+    """Download the chosen count table, build the sample table from GEO, and create an upload."""
+    if not body.counts_option:
+        raise HTTPException(status_code=422, detail="Choose a count table (counts_option).")
+    try:
+        out = geo.import_dataset(body.accession, body.counts_option)
+    except geo.GeoError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except uploads.UploadError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {**uploads.describe(out["upload_id"]), "geo": out["geo"], "description": out["description"]}
 
 
 # ---- Uploads ------------------------------------------------------------------------------
@@ -547,6 +578,90 @@ def run_bundle(job_id: str):
     return FileResponse(z, filename=z.name, media_type="application/zip")
 
 
+# ---- Cross-study comparison (results level, never merged counts) -------------------------------
+@app.get("/api/comparisons")
+def list_comparisons() -> dict:
+    runs = [{"id": j["id"], "label": comparisons.default_label(j), "dataset": j.get("dataset"),
+             "comparison": f"{j['settings']['test_level']} vs {j['settings']['reference_level']}", "created": j["created"]}
+            for j in jobs.all_jobs() if j["status"] in ("success", "success_with_errors") and j.get("run_dir")]
+    return {"available": comparisons.available(), "comparisons": comparisons.list_all(), "runs": runs}
+
+
+@app.post("/api/comparisons")
+def start_comparison(spec: str = Form(...), files: list[UploadFile] | None = File(None)) -> dict:
+    """spec: JSON {title?, studies: [{kind: "run", job_id, label?, flip?} | {kind: "table", file: <index in files>,
+    label, organism?, comparison?, flip?}], padj_cutoff?, log2fc_cutoff?, compare_pathways?}"""
+    try:
+        body = json.loads(spec)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="spec must be JSON.")
+    try:
+        return comparisons.comparisons.start(body, [(f.filename or "table.csv", f.file) for f in files or [] if f.filename])
+    except comparisons.CompareError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+def _comparison_dir(cid: str) -> Path:
+    try:
+        return comparisons.comparison_dir(cid)
+    except KeyError:
+        _not_found("Comparison")
+
+
+@app.get("/api/comparisons/{cid}")
+def get_comparison(cid: str) -> dict:
+    return comparisons.overview(_comparison_dir(cid))
+
+
+@app.get("/api/comparisons/{cid}/files/{rel:path}")
+def comparison_file(cid: str, rel: str, download: bool = False):
+    try:
+        p = comparisons.safe_file(_comparison_dir(cid), rel)
+    except KeyError:
+        _not_found("File")
+    return FileResponse(p, filename=p.name if download else None,
+                        content_disposition_type="attachment" if download else "inline")
+
+
+@app.get("/api/comparisons/{cid}/download")
+def comparison_download(cid: str):
+    try:
+        z = comparisons.results_zip(_comparison_dir(cid))
+    except KeyError:
+        raise HTTPException(status_code=409, detail="No results yet.")
+    return FileResponse(z, filename=z.name, media_type="application/zip")
+
+
+@app.get("/api/comparisons/{cid}/code")
+def comparison_code(cid: str):
+    try:
+        z = comparisons.code_zip(_comparison_dir(cid))
+    except KeyError:
+        raise HTTPException(status_code=409, detail="No results yet.")
+    return FileResponse(z, filename=z.name, media_type="application/zip")
+
+
+@app.get("/api/comparisons/{cid}/report/html")
+def comparison_report_html(cid: str, download: bool = False):
+    try:
+        p = comparisons.report_html(_comparison_dir(cid))
+    except KeyError:
+        raise HTTPException(status_code=409, detail="No results yet.")
+    return FileResponse(p, filename=f"comparison_{cid}.html" if download else None, media_type="text/html",
+                        content_disposition_type="attachment" if download else "inline")
+
+
+@app.get("/api/comparisons/{cid}/report/pdf")
+def comparison_report_pdf(cid: str):
+    try:
+        p = comparisons.report_pdf(_comparison_dir(cid))
+    except KeyError:
+        raise HTTPException(status_code=409, detail="No results yet.")
+    except report.ReportError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return FileResponse(p, filename=f"comparison_{cid}.pdf", media_type="application/pdf")
+
+
 # ---- Frontend (built React app) ---------------------------------------------------------------
 if settings.frontend_dist.exists():
     app.mount("/assets", StaticFiles(directory=settings.frontend_dist / "assets"), name="assets")
@@ -559,4 +674,3 @@ if settings.frontend_dist.exists():
         if full_path and settings.frontend_dist in candidate.parents and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(settings.frontend_dist / "index.html")
-        

@@ -87,13 +87,14 @@ def build(job: dict, job_dir: Path, run_dir: Path, *, include_data: bool = False
 
 
 # ---- code bank -------------------------------------------------------------------------------
-def _add_codebank(put, cb: dict) -> str:
+def _add_codebank(put, cb: dict, paths: list[str] | None = None) -> str:
     """Add codebank/ at the run's commit. Returns a note on how exact the copy is."""
+    paths = paths or CODEBANK_PATHS
     commit = cb.get("commit")
     if commit:
         try:
             tar = subprocess.run(["git", "-C", str(settings.codebank_dir), "archive", "--format=tar", commit, "--",
-                                  *[p for p in CODEBANK_PATHS if _tracked(commit, p)]],
+                                  *[p for p in paths if _tracked(commit, p)]],
                                  capture_output=True, timeout=60)
         except (OSError, subprocess.SubprocessError):
             tar = None
@@ -109,7 +110,7 @@ def _add_codebank(put, cb: dict) -> str:
             return note
     # no git history here (e.g. a container without .git): copy the files as they are now
     current = codebank.version_info()
-    for rel in CODEBANK_PATHS:
+    for rel in paths:
         src = settings.codebank_dir / rel
         for f in ([src] if src.is_file() else sorted(src.rglob("*")) if src.is_dir() else []):
             if f.is_file() and "/runs/" not in str(f) and "/output/" not in str(f):

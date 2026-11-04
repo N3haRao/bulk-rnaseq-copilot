@@ -59,6 +59,11 @@ def pdf(job_dir: Path) -> Path:
     pdf_path = job_dir / "report" / "report.pdf"
     if not html_path.exists():
         raise ReportError("Create the report first.")
+    return print_pdf(html_path, pdf_path)
+
+
+def print_pdf(html_path: Path, pdf_path: Path) -> Path:
+    """Print an HTML file to PDF with headless Chromium (Playwright); reuses an up-to-date PDF."""
     if pdf_path.exists() and pdf_path.stat().st_mtime >= html_path.stat().st_mtime:
         return pdf_path
     try:
@@ -353,7 +358,7 @@ main { max-width: 900px; margin: 0 auto; padding: 32px 20px 60px; }
 h1 { font-size: 1.9rem; margin: 0 0 6px; } h2 { font-size: 1.3rem; margin: 0 0 10px; border-bottom: 2px solid var(--border); padding-bottom: 4px; }
 h3 { font-size: 1.02rem; margin: 18px 0 8px; }
 .kicker { text-transform: uppercase; letter-spacing: .08em; font-size: .78rem; color: var(--accent); font-weight: 700; margin: 0; }
-section { margin: 30px 0; } p { margin: 0 0 10px; } .muted { color: var(--muted); } .small { font-size: .85rem; }
+section { margin: 30px 0; } .warn { border-left: 4px solid #E69F00; background: #FFF8E6; padding: 8px 14px; margin: 12px 0; } p { margin: 0 0 10px; } .muted { color: var(--muted); } .small { font-size: .85rem; }
 .up { color: var(--up); } .down { color: var(--down); }
 .who { display:inline-block; font-size:.74rem; padding:1px 8px; border-radius:999px; margin: 0 0 6px; }
 .who.model { background:#e7f0fe; color:#174ea6; } .who.rules { background:var(--soft); color:var(--muted); }

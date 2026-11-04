@@ -58,7 +58,7 @@ def _save_stream(src: BinaryIO, dest: Path) -> None:
 
 
 def create(counts: tuple[str, BinaryIO], metadata: tuple[str, BinaryIO], *, source: str = "upload",
-           example: str | None = None) -> dict:
+           example: str | None = None, geo: dict | None = None) -> dict:
     uid = _new_id()
     d = settings.uploads_dir / uid
     d.mkdir(parents=True)
@@ -73,6 +73,8 @@ def create(counts: tuple[str, BinaryIO], metadata: tuple[str, BinaryIO], *, sour
             "counts_file": counts_name, "metadata_file": meta_name,
             "counts_original_name": Path(counts[0]).name, "metadata_original_name": Path(metadata[0]).name,
         }
+        if geo:
+            record["geo"] = geo  # imported from GEO: accession, title, which count table, matching notes
         (d / "upload.json").write_text(json.dumps(record, indent=2))
         describe(uid)  # fail early if the sample table cannot be read at all
         return record

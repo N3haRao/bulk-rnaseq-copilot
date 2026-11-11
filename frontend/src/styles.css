@@ -228,3 +228,14 @@ button.attach.done { border-color: var(--pass, #1a7f37); }
 .chip { font-size: 0.78rem; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); border: 1px solid var(--border); }
 .suggestions button.small { font-size: 0.8rem; padding: 4px 8px; }
 input[type="color"] { width: 44px; height: 28px; padding: 0 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); vertical-align: middle; }
+
+/* ---- Start from FASTQ ---- */
+.fastq textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; resize: vertical; }
+.fastq pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 0.8rem; overflow-x: auto; max-height: 320px; white-space: pre-wrap; }
+.fastq td input { width: 100%; min-width: 60px; }
+.fastq .steps-pick { border: none; padding: 0; margin: 10px 0; }
+.fastq .check-row { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; }
+.fastq .progress { height: 8px; background: var(--surface-2); border-radius: 99px; overflow: hidden; }
+.fastq .progress > div { height: 100%; background: var(--accent); transition: width 0.4s; }
+.badge.note, .badge.waiting { background: var(--surface-2); color: var(--muted); }
+.badge.stopped { background: var(--fail-soft); color: var(--fail); }

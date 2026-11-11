@@ -68,7 +68,8 @@ if [ -n "$OPORT" ]; then
   export OLLAMA_URL=http://127.0.0.1:$OPORT
   # on CPUs one answer can take many minutes
   [ -n "$NV" ] || export RELEASE_AGENT_TIMEOUT=${RELEASE_AGENT_TIMEOUT:-3600}
-  echo "Model: $RELEASE_AGENT_MODEL on the ${NV:+GPU ($(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1))}${NV:-CPU}"
+  if [ -n "$NV" ]; then WHERE="GPU ($(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1))"; else WHERE="CPU"; fi
+  echo "Model: $RELEASE_AGENT_MODEL on the $WHERE"
 fi
 
 echo "Integrating code bank $TAG into $SITE ..."

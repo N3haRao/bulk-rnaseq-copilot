@@ -11,8 +11,8 @@ All analysis is done by the tested R scripts in the [rnaseq-codebank](https://gi
 You need R 4.3 or newer, Python 3.11 or newer, Node.js 20 or newer and git.
 
 ```bash
-git clone --recurse-submodules https://github.com/N3haRao/agentic-omics-testbed.git
-cd agentic-omics-testbed
+git clone --recurse-submodules https://github.com/N3haRao/bulk-rnaseq-copilot.git
+cd bulk-rnaseq-copilot
 
 # 1. R packages for the code bank (once, takes a while) and the example datasets
 cd codebank
@@ -87,14 +87,16 @@ How it works:
 
 `containers/` has the Apptainer images (the site with R, the code bank and the FASTQ tools; Ollama for the model), `build.sh`, and SLURM scripts for Ada. `containers/ada/site.slurm` runs the site behind an ssh tunnel, and `containers/ada/upstream.slurm` runs the FASTQ steps as a batch job. See [containers/README.md](containers/README.md).
 
-### Optional analyses: splicing and isoforms
+### Optional analyses on a run ("More analyses" tab)
 
-A finished run has a **Splicing & isoforms** tab with two optional analyses. Both use the run's own comparison and the code bank's modules (v0.4.0 or newer):
+Every code-bank module whose manifest entry says `site: {attach_to: run}` is offered on a finished run (code bank v0.6.0+: splicing and isoforms). The manifest's `site` block describes the uploads, the settings the user can change, what is taken from the run, and the results (tiles, headline sentences, figures, top tables, downloads, methods, files for the chat). The site draws the card, the form, the results, the report section, the PowerPoint slide, the chat context and the code .zip from it (`backend/app/extras.py`, `frontend/src/components/ExtrasTab.tsx`), so **a new module, setting, figure or table needs no site code**. The building blocks and every field are in `codebank/docs/ADDING_A_MODULE.md`.
 
-- **Alternative splicing:** upload the rMATS output tables (or a .zip of rMATS's output folder) and say which group was rMATS sample 1. The code bank's `splicing/` module finds the significant events (FDR, ΔPSI, read coverage), makes the figures, tests pathways, and sorts genes into splicing only / expression only / both by comparing with this run's gene-level results.
-- **Transcript isoforms:** upload a .zip of Salmon output folders (`<sample>/quant.sf`, named like the run's samples), plus the GTF unless the transcript names include the gene (GENCODE). The `isoforms/` module runs **DEI**, differential isoform expression (DESeq2 per transcript, with this run's settings), and **DUI**, differential isoform usage (DEXSeq + stageR; isoform switches), with the run's sample table, groups and covariates.
+- **Alternative splicing:** upload the rMATS output tables (or a .zip of rMATS's output folder) and say which group was rMATS sample 1. The `splicing/` module finds the significant events (FDR, ΔPSI, read coverage), makes the figures, tests pathways, and sorts genes into splicing only / expression only / both by comparing with this run's gene-level results.
+- **Transcript isoforms:** upload a .zip of Salmon output folders (`<sample>/quant.sf`, named like the run's samples), plus the GTF unless the transcript names include the gene (GENCODE). The `isoforms/` module runs **DEI** (DESeq2 per transcript, with this run's settings) and **DUI** (DEXSeq + stageR; isoform switches).
 
-Analyses run in the background, one at a time (`backend/app/extras.py`, files under `data/jobs/<run>/extras/`). When one finishes, it is added to the HTML/PDF report and the PowerPoint, to the code .zip (`extra_analyses/<module>/` with its settings and a rerun script), and to the workspace of new chats. Tests: `backend/tests/test_extras.py`, which runs the real R modules and is skipped when R lacks DESeq2, DEXSeq, stageR, tximport or fgsea.
+Analyses run in the background, one at a time; files are under `data/jobs/<run>/extras/`. API: `GET /api/runs/<id>/extras` (forms and latest results), `POST /api/runs/<id>/extras/<module>` (multipart: one file field per manifest input, plus the settings).
+
+**Keeping the site and the code bank in step:** `extras.check_manifest()` lists everything in a code bank's manifest that the site cannot show (an unknown upload handler, form type or page; a setting that is not a module parameter; a tile reading a missing source...). `backend/tests/test_module_contract.py` runs it on the installed code bank, and also adds a made-up module to a temporary code bank to prove it is offered, run and shown without site code. Tests: `test_extras.py` (the real R modules; skipped when R lacks DESeq2, DEXSeq, stageR, tximport or fgsea).
 
 ### Import from GEO by GSE ID
 
@@ -183,7 +185,8 @@ backend/app/
   uploads.py          stores uploads; runs step 01 (input check) on demand
   jobs.py             runs the full pipeline in the background, one at a time; progress from the run log
   results.py          reads a finished run folder for the results tabs
-  extras.py           optional splicing / isoform analyses on a finished run
+  extras.py           optional analyses on a finished run, driven by the manifest's site blocks
+  release/            code bank releases on the server: staging copy, release agent, review, approve (ops/release)
   geo.py              import a public dataset from GEO by GSE ID
   comparisons.py      cross-study comparison of finished runs and published tables (compare module)
 backend/eval/         benchmark of sample tables with expected setups, and the scoring script
@@ -192,11 +195,15 @@ frontend/src/
                       Compare (pick studies) and Comparison (results)
   components/         shared UI, gene table, pathways
 codebank/             git submodule: rnaseq-codebank
+ops/release           integrate / approve / preview / status / rollback of code bank releases (docs/RELEASES.md)
+containers/           Apptainer images and the SLURM jobs for Ada (site, release, FASTQ)
 ```
 
 ## Updating the code bank
 
-The submodule is pinned to one code-bank commit, which every run records in its provenance. After a new code-bank release:
+**On the server (Ada):** the site runs from `$COPILOT_HOME/copilot` with the code bank in `$COPILOT_HOME/codebank-live`, not the submodule. A bioinformatician releases with `scripts/release.sh`; the site checks itself against the release in a staging copy, the release agent (an open-weight coding model) fixes it if needed, and the bioinformatician who released it approves. Step by step: [docs/RELEASES.md](docs/RELEASES.md).
+
+**In this repository (development):** the submodule is pinned to one code-bank commit, which every run records in its provenance. After a new code-bank release:
 
 ```bash
 cd codebank && git fetch --tags && git checkout v0.2.1 && cd ..

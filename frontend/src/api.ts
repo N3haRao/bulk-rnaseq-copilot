@@ -32,7 +32,7 @@ export interface Proposal {
 export interface Upload {
   id: string;
   created: string;
-  source: "upload" | "example";
+  source: "upload" | "example" | "geo" | "fastq";
   example: string | null;
   counts_original_name: string;
   metadata_original_name: string;
@@ -409,6 +409,42 @@ export interface KeyStatus {
 
 export class ApiError extends Error {}
 
+// ---- Start from FASTQ (files already on the server) ----
+export interface FromFastq { job_id: string; folder: string; modules: Record<string, { available: boolean; why?: string }> }
+export interface FastqReference {
+  species: string; label: string; files_ready: boolean; star_index: boolean; salmon_index: boolean; dir: string;
+  download: { status?: string; file?: string | null; error?: string };
+}
+export interface FastqFolderItem { name: string; n_files: number; gb: number; modified: string }
+export interface FastqHome {
+  incoming: string; folders: FastqFolderItem[]; references: FastqReference[]; steps: { id: string; label: string }[];
+  required_steps: string[]; max_threads: number; jobs: FastqJob[];
+}
+export interface FastqSample { sample: string; r1: string | null; r2: string | null; gb: number }
+export interface FastqFolder {
+  folder: string; path: string; samples: FastqSample[]; layout: string; problems: string[]; gb: number;
+  suggestion: { groups: Record<string, string>; control: string | null; origin: string };
+}
+export interface FastqAssist {
+  groups: Record<string, string>; control: string | null; batch: Record<string, string>; species: string | null; note: string; origin: string;
+}
+export interface FastqSpec {
+  folder: string; groups: Record<string, string>; batch: Record<string, string>; control: string | null; species: string | null;
+  steps: string[]; threads: number; description: string; setup_origin?: string | null;
+}
+export interface FastqCheck {
+  ok: boolean; lines: { status: "pass" | "note" | "fail"; text: string }[]; steps: string[]; threads: number;
+  estimate_hours: number; need_gb: number; free_gb: number;
+}
+export interface FastqStep { id: string; label: string; status: string; seconds: number | null; facts: string[] }
+export interface FastqJob {
+  id: string; status: string; created: string; started: string | null; finished: string | null; error: string | null;
+  folder: string; species: string; control: string; groups: Record<string, string>; steps: string[]; threads: number;
+  layout: string; n_samples: number; gb: number; description: string; upload_id: string | null;
+  progress?: number; step_list?: FastqStep[]; current?: string | null; files?: { label: string; path: string }[];
+  comparisons?: string[]; log_tail?: string[];
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
@@ -501,7 +537,19 @@ export const api = {
   geoImport: (accession: string, countsOption: string) =>
     request<Upload & { description: string }>("/api/geo/import", json({ accession, counts_option: countsOption })),
   extras: (jobId: string) =>
-    request<{ available: Record<string, string>; forms: Record<string, ExtraForm>; analyses: Record<string, ExtraAnalysis | null> }>(`/api/runs/${jobId}/extras`),
+    request<{ available: Record<string, string>; forms: Record<string, ExtraForm>; analyses: Record<string, ExtraAnalysis | null>;
+      from_fastq: FromFastq | null }>(`/api/runs/${jobId}/extras`),
+  startExtraFromFastq: (jobId: string, module: ExtraModule) =>
+    request<ExtraAnalysis>(`/api/runs/${jobId}/extras/${module}/from-fastq`, { method: "POST" }),
+  fastqHome: () => request<FastqHome>("/api/fastq/folders"),
+  fastqFolder: (name: string) => request<FastqFolder>(`/api/fastq/folders/${encodeURIComponent(name)}`),
+  fastqAssist: (folder: string, description: string) => request<FastqAssist>("/api/fastq/assist", json({ folder, description })),
+  fastqReference: (species: string) => request<FastqReference>(`/api/fastq/references/${species}`, { method: "POST" }),
+  fastqCheck: (spec: FastqSpec) => request<FastqCheck>("/api/fastq/check", json(spec)),
+  fastqStart: (spec: FastqSpec) => request<FastqJob>("/api/fastq/jobs", json(spec)),
+  fastqJob: (id: string) => request<FastqJob>(`/api/fastq/jobs/${id}`),
+  fastqCancel: (id: string) => request<FastqJob>(`/api/fastq/jobs/${id}/cancel`, { method: "POST" }),
+  fastqToDataset: (id: string) => request<Upload>(`/api/fastq/jobs/${id}/dataset`, { method: "POST" }),
   extra: (jobId: string, module: ExtraModule) => request<ExtraAnalysis>(`/api/runs/${jobId}/extras/${module}`),
   startExtra: (jobId: string, module: ExtraModule, files: Record<string, File[]>, fields: Record<string, string>) => {
     const form = new FormData();

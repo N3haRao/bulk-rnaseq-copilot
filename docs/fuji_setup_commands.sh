@@ -98,10 +98,14 @@ $COPILOT_HOME/copilot/ops/release approve v0.6.1      # restarts the site with t
 
 
 # -----------------------------------------------------------------------------
-# STEP 7. [fuji] FASTQ files -> counts, splicing, isoforms
+# STEP 7. [fuji + Mac] FASTQ files -> counts, splicing, isoforms (on the website)
 # -----------------------------------------------------------------------------
-# References, config and sample sheet as in docs/ada_setup_commands.sh step 8, then (no sbatch here;
-# nohup keeps it running after you log out; set threads in the config to what nproc showed):
-CONFIG=$COPILOT_HOME/experiments/exp1/upstream.yaml BIND=$COPILOT_HOME \
-  nohup bash $COPILOT_HOME/copilot/containers/ada/upstream.slurm > $COPILOT_HOME/upstream-exp1.log 2>&1 &
-tail -f $COPILOT_HOME/upstream-exp1.log
+# Copy one folder per experiment into the site's incoming folder (from your Mac, or wherever the files are):
+#   rsync -av --progress /path/to/fastq/ user@fuji.nri.bcm.edu:rnaseq-copilot/data/incoming/my_experiment/
+# Then on the site: "From FASTQ" -> pick the folder -> groups (or describe the experiment) -> species -> Check -> Start.
+# The first run for a species downloads the GENCODE reference (button on the page) and builds the STAR index (~1 h).
+# When it finishes: "Set up the analysis"; the splicing and isoform analyses start by themselves when that analysis ends.
+#
+# Without the website (same pipeline, a config you write yourself; see docs/ada_setup_commands.sh step 8):
+#   CONFIG=$COPILOT_HOME/experiments/exp1/upstream.yaml BIND=$COPILOT_HOME \
+#     nohup bash $COPILOT_HOME/copilot/containers/ada/upstream.slurm > $COPILOT_HOME/upstream-exp1.log 2>&1 &

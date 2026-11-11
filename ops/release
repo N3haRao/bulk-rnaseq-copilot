@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Bring code bank releases into the site (see docs/RELEASES.md and backend/app/release/cli.py).
+#   ops/release integrate v0.6.0     check the site against a release, fix it in a staging copy if needed
+#   ops/release approve v0.6.0       make it live (the bioinformatician who made the release)
+#   ops/release preview v0.6.0       run the staging site on port 8001 to look at it
+#   ops/release status | rollback --yes
+#
+# Where Python comes from: $COPILOT_PYTHON, else backend/.venv, else (on a server with the image, e.g. Ada)
+# the image $COPILOT_HOME/rnaseq-copilot.sif with $COPILOT_HOME bound at the same path, else python3.
+# The model for the release agent is at $OLLAMA_URL (containers/ada/release.slurm starts one).
+# After approve / rollback, $COPILOT_RESTART_CMD (if set) restarts the site (run on the host), e.g.
+#   export COPILOT_RESTART_CMD="$COPILOT_HOME/copilot/containers/ada/restart_site.sh"
+set -euo pipefail
+SITE="$(cd "$(dirname "$0")/.." && pwd)"
+HOME_DIR="${COPILOT_HOME:-$(dirname "$SITE")}"
+export COPILOT_HOME="$HOME_DIR"
+IN_CONTAINER="${APPTAINER_CONTAINER:-${SINGULARITY_CONTAINER:-}}"
+SIF="${COPILOT_SIF:-$HOME_DIR/rnaseq-copilot.sif}"
+
+restart_after() {   # on the host, after a successful approve / rollback
+  if [ -n "${COPILOT_RESTART_CMD:-}" ]; then
+    echo "Restarting the site: $COPILOT_RESTART_CMD"
+    bash -c "$COPILOT_RESTART_CMD"
+  fi
+}
+
+PY="${COPILOT_PYTHON:-}"
+if [ -z "$PY" ] && [ -x "$SITE/backend/.venv/bin/python" ]; then PY="$SITE/backend/.venv/bin/python"; fi
+if [ -z "$PY" ] && [ -z "$IN_CONTAINER" ] && [ -f "$SIF" ]; then
+  # run this same command inside the image (it has Python, R, Node and the test tools)
+  command -v apptainer >/dev/null || module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true
+  BINDS="$HOME_DIR"
+  if [ -n "${COPILOT_CODEBANK_REPO:-}" ]; then
+    CB="$(readlink -f "$COPILOT_CODEBANK_REPO")"
+    case "$CB/" in "$(readlink -f "$HOME_DIR")"/*) ;; *) BINDS="$BINDS,$CB" ;; esac
+  fi
+  case "$(readlink -f "$SITE")/" in "$(readlink -f "$HOME_DIR")"/*) ;; *) BINDS="$BINDS,$SITE" ;; esac
+  ENVS="COPILOT_HOME=$HOME_DIR,USER=${USER:-$(id -un)}"
+  for v in COPILOT_CODEBANK_REPO OLLAMA_URL RELEASE_AGENT_MODEL RELEASE_AGENT_TIMEOUT RELEASE_AGENT_CONTEXT \
+           RELEASE_FINAL_TESTS PREVIEW_PORT; do
+    [ -n "${!v:-}" ] && ENVS="$ENVS,$v=${!v}"
+  done
+  set +e
+  apptainer exec --containall --cleanenv --bind "$BINDS" --env "$ENVS" --pwd "$SITE" "$SIF" \
+    bash -c '. /opt/app/site-env.sh; export COPILOT_PYTHON=/opt/conda/envs/app/bin/python; exec "$0" "$@"' "$SITE/ops/release" "$@"
+  rc=$?
+  set -e
+  if [ $rc = 0 ] && { [ "${1:-}" = approve ] || [ "${1:-}" = rollback ]; }; then restart_after; fi
+  exit $rc
+fi
+[ -n "$PY" ] || PY="$(command -v python3)"
+
+if [ "${1:-}" = "preview" ]; then
+  TAG="${2:?usage: ops/release preview vX.Y.Z}"
+  STAGE="$HOME_DIR/staging/$TAG/site"
+  [ -d "$STAGE" ] || { echo "No staging copy for $TAG (run: ops/release integrate $TAG)"; exit 1; }
+  (cd "$STAGE/frontend" && npm run build >/dev/null)
+  cd "$STAGE/backend"
+  echo "Staging site for $TAG on http://localhost:${PREVIEW_PORT:-8001} (its own data folder; Ctrl-C to stop)"
+  CODEBANK_DIR="$HOME_DIR/codebank-releases/$TAG" OMICS_DATA_DIR="$HOME_DIR/staging/$TAG/preview-data" \
+    FRONTEND_DIST="$STAGE/frontend/dist" exec "$PY" -m uvicorn app.main:app --host 127.0.0.1 --port "${PREVIEW_PORT:-8001}"
+fi
+cd "$SITE/backend"
+exec "$PY" -m app.release "$@"      # runs $COPILOT_RESTART_CMD itself after approve / rollback

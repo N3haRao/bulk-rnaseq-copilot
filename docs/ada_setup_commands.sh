@@ -22,7 +22,10 @@
 # -----------------------------------------------------------------------------
 # STEP 1. [Mac] Log in to Ada with ssh (and set up a short name + key, once)
 # -----------------------------------------------------------------------------
+# Off campus: connect to the BCM VPN first.
 ssh user@ada.nri.bcm.edu
+# Type your BCM password (nothing appears as you type). You are on an Ada login node
+# when the prompt changes. Type  exit  to come back to the Mac.
 
 # Once, so you do not type the password every time and can write  ssh ada :
 [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -C "user@mac"       # press Enter at the questions
@@ -31,7 +34,7 @@ cat >> ~/.ssh/config <<'EOF'
 
 Host ada
     HostName ada.nri.bcm.edu
-    User nehar
+    User user
     ServerAliveInterval 60
 EOF
 ssh ada                       # should log in without a password now
@@ -73,6 +76,10 @@ mkdir -p $COPILOT_DIR && cd $COPILOT_DIR
 git clone --recurse-submodules -b main https://github.com/N3haRao/bulk-rnaseq-copilot.git
 cd bulk-rnaseq-copilot && git log --oneline -1 && git -C codebank log --oneline -1
 # TROUBLESHOOTING
+# - GitHub asks for a password (private repository): use a personal access token as the
+#   password (github.com -> Settings -> Developer settings -> Personal access tokens), or
+#   make an ssh key on Ada (ssh-keygen -t ed25519), add ~/.ssh/id_ed25519.pub to GitHub
+#   (Settings -> SSH keys) and clone git@github.com:N3haRao/bulk-rnaseq-copilot.git
 # - "Could not resolve host: github.com": the login node has no internet; ask the admins
 #   which node can reach the internet (often a "data transfer" node), or clone on the Mac and
 #   copy:  [Mac] scp -r ~/projects/bulk-rnaseq-copilot ada:rnaseq-copilot/
@@ -85,7 +92,7 @@ cd bulk-rnaseq-copilot && git log --oneline -1 && git -C codebank log --oneline 
 srun --pty --cpus-per-task=8 --mem=32G --time=04:00:00 bash
 # (add  -p <partition>  if sinfo showed you need one)
 module load apptainer 2>/dev/null || module load singularity 2>/dev/null
-cd $COPILOT_DIR/agentic-omics-testbed
+cd $COPILOT_DIR/bulk-rnaseq-copilot
 # Apptainer's cache and temporary files are big: keep them out of home and /tmp
 mkdir -p $COPILOT_DIR/apptainer-cache $COPILOT_DIR/apptainer-tmp
 export APPTAINER_CACHEDIR=$COPILOT_DIR/apptainer-cache APPTAINER_TMPDIR=$COPILOT_DIR/apptainer-tmp
@@ -121,17 +128,28 @@ exit
 
 
 # -----------------------------------------------------------------------------
-# STEP 6. [Ada] Download the open-weight model (once; ~5 GB)
+# STEP 6. [Ada] Download the open-weight models and set up the site folders (once)
 # -----------------------------------------------------------------------------
 # Needs internet: run on the login node (or the node your admins point you to).
 cd $COPILOT_DIR/bulk-rnaseq-copilot
-containers/ada/pull_model.sh                    # qwen3:8b into $COPILOT_DIR/models
-# A bigger model if Ada's GPUs allow it (better setup suggestions):
+containers/ada/pull_model.sh            # qwen3:8b (site assistants, ~5 GB) + qwen3-coder:30b (release agent, ~19 GB)
+# A bigger model for the site if a GPU server allows it (better setup suggestions):
 #   containers/ada/pull_model.sh qwen3:14b      and later  OLLAMA_MODEL=qwen3:14b sbatch ...
+#
+# The site and the code bank run from folders, not from the image (so a code bank release only needs
+# a restart). This makes $COPILOT_DIR/copilot (the live site) and $COPILOT_DIR/codebank (where
+# bioinformaticians commit and release), and makes the newest code bank release live:
+COPILOT_HOME=$COPILOT_DIR containers/ada/setup_home.sh
+echo "export COPILOT_HOME=$COPILOT_DIR" >> ~/.bashrc
+echo 'export COPILOT_RESTART_CMD="$COPILOT_HOME/copilot/containers/ada/restart_site.sh"' >> ~/.bashrc
+source ~/.bashrc
+# How code bank releases reach the site afterwards: $COPILOT_DIR/copilot/docs/RELEASES.md
 # TROUBLESHOOTING
 # - "pull model manifest: ... dial tcp": no internet here; try another node, or pull on the Mac
 #   (ollama pull qwen3:8b) and copy ~/.ollama/models to Ada:
 #       [Mac] rsync -a ~/.ollama/models/ ada:rnaseq-copilot/models/
+# - setup_home.sh says the code bank has no release tag: fine for now (the site uses its own copy);
+#   the first  scripts/release.sh <version>  in $COPILOT_DIR/codebank makes one.
 
 
 # -----------------------------------------------------------------------------
@@ -139,24 +157,27 @@ containers/ada/pull_model.sh                    # qwen3:8b into $COPILOT_DIR/mod
 # -----------------------------------------------------------------------------
 # [Ada] Optional: the Anthropic API key in a private file instead of the Settings page
 #   ( umask 077; echo "ANTHROPIC_API_KEY=sk-ant-..." > $COPILOT_DIR/secrets.env )
-# [Ada] Start the job (add -p <gpu partition> if needed; without a GPU remove "--gres" in the script):
-cd $COPILOT_DIR/bulk-rnaseq-copilot
-sbatch containers/ada/site.slurm
-squeue -u nehar                                 # wait until the state is R (running)
+# [Ada] Start the job. No GPU needed (Ada has none: the model then runs on the CPU, slowly). On a
+# server with GPUs:  sbatch --gres=gpu:1 ...   Without the open-weight model:  OLLAMA_MODEL=none sbatch ...
+cd $COPILOT_DIR
+sbatch copilot/containers/ada/site.slurm
+squeue -u user                                 # wait until the state is R (running)
 cat rnaseq-copilot-*.log                        # shows the node, the port and the ssh command
 # The log contains a line like:
-#   ssh -N -L 8000:127.0.0.1:41234 -J nehar@ada.nri.bcm.edu nehar@<node>
+#   ssh -N -L 8000:127.0.0.1:41234 -J user@ada.nri.bcm.edu user@<node>
 #
 # [Mac] Paste THAT line into a new Terminal window and leave it open (it prints nothing):
-#   ssh -N -L 8000:127.0.0.1:<port> -J nehar@ada.nri.bcm.edu nehar@<node>
+#   ssh -N -L 8000:127.0.0.1:<port> -J user@ada.nri.bcm.edu user@<node>
 # [Mac] Open http://localhost:8000 in your browser. Use the site as on the Mac.
 #
 # [Ada] Stop the site when you are done (your data stays in $COPILOT_DIR/data):
 #   scancel <job id>                             # the number squeue shows
 # TROUBLESHOOTING
 # - The job stays PD (pending): the partition is busy or the request is too big; check with
-#   squeue -u nehar  (the REASON column). Try a shorter --time or another partition.
-# - The log says the model is missing: step 6. The site still works with built-in rules.
+#   squeue -u user  (the REASON column). Try a shorter --time or another partition.
+# - The log says the model is missing: step 6. The site still works (Claude, or built-in rules).
+# - Ada is a single node: if <node> is the login node itself, the shorter
+#       ssh -N -L 8000:127.0.0.1:<port> ada     works (the log prints it too).
 # - "channel 0: open failed: connect failed" in the tunnel window: the site is not up yet
 #   (look at the end of the log) or the port in the command is not the one in the log.
 # - The jump (-J) to the compute node is refused: tunnel in two hops instead:
@@ -216,7 +237,7 @@ steps: [qc, read_length, star, salmon, gene_counts, rmats, splicing, sashimi, is
 EOF
 
 # 8d. Run it (hours, depending on the number of samples; the first run builds the indexes):
-CONFIG=$COPILOT_DIR/experiments/exp1/upstream.yaml BIND=$COPILOT_DIR sbatch $COPILOT_DIR/bulk-rnaseq-copilot/containers/ada/upstream.slurm
+CONFIG=$COPILOT_DIR/experiments/exp1/upstream.yaml BIND=$COPILOT_DIR sbatch $COPILOT_DIR/copilot/containers/ada/upstream.slurm
 squeue -u user
 tail -f rnaseq-upstream-*.log                    # Ctrl+C stops watching (not the job)
 
@@ -240,11 +261,23 @@ tail -f rnaseq-upstream-*.log                    # Ctrl+C stops watching (not th
 
 
 # -----------------------------------------------------------------------------
-# STEP 9. [Ada] Update to a new version
+# STEP 9. [Ada] Updates
 # -----------------------------------------------------------------------------
-cd $COPILOT_DIR/bulk-rnaseq-copilot
-git pull && git submodule update --init --recursive
-# then rebuild the site image (step 4, "app" only) and replace the old one:
+# 9a. A new CODE BANK release (a bioinformatician, in $COPILOT_DIR/codebank): no image rebuild.
+#     The release job checks the site against it, the release agent fixes the site in a staging copy if
+#     needed, and the bioinformatician who released it approves. See copilot/docs/RELEASES.md:
+#   cd $COPILOT_DIR/codebank && git commit -am "..." && scripts/release.sh 0.6.1
+#   cat $COPILOT_DIR/staging/v0.6.1/RELEASE_REVIEW.md
+#   $COPILOT_DIR/copilot/ops/release approve v0.6.1          # restarts the site (COPILOT_RESTART_CMD)
+#
+# 9b. A new version of the SITE from GitHub: merge it into the live site folder, then restart.
+cd $COPILOT_DIR/copilot
+git pull --no-edit upstream main
+$COPILOT_DIR/copilot/containers/ada/restart_site.sh
+#
+# 9c. Rebuild the site image only when the SOFTWARE changes (containers/env-*.yml,
+#     backend/requirements.txt, frontend/package-lock.json; the site log warns about the last two):
+#   cd $COPILOT_DIR/bulk-rnaseq-copilot && git pull && git submodule update --init --recursive
 #   BUILD_OPTS="--fakeroot" containers/build.sh app && mv containers/build/rnaseq-copilot.sif $COPILOT_DIR/
 # The model image (ollama.sif) only needs rebuilding when containers/ollama.def changes.
 

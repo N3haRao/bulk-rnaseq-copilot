@@ -104,7 +104,7 @@ $COPILOT_HOME/copilot/ops/release approve v0.6.1      # restarts the site with t
 #   rsync -av --progress /path/to/fastq/ user@fuji.nri.bcm.edu:rnaseq-copilot/data/incoming/my_experiment/
 # A public GEO series straight from ENA (lists first; --download fetches, names files by genotype/treatment, checks MD5):
 #   python3 $COPILOT_HOME/copilot/containers/ada/fetch_geo_fastq.py GSE314221
-#   nohup python3 $COPILOT_HOME/copilot/containers/ada/fetch_geo_fastq.py GSE314221 --download > $COPILOT_HOME/fetch.log 2>&1 &
+#   nohup python3 $COPILOT_HOME/copilot/containers/ada/fetch_geo_fastq.py GSE314221 --download --parallel 6 > $COPILOT_HOME/fetch.log 2>&1 &
 # Then on the site: "From FASTQ" -> pick the folder -> groups (or describe the experiment) -> species -> Check -> Start.
 # The first run for a species downloads the GENCODE reference (button on the page) and builds the STAR index (~1 h).
 # When it finishes: "Set up the analysis"; the splicing and isoform analyses start by themselves when that analysis ends.

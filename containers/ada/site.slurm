@@ -37,7 +37,7 @@ APP=$COPILOT_HOME/rnaseq-copilot.sif
 OLL=$COPILOT_HOME/ollama.sif
 [ -f "$APP" ] || { echo "Missing $APP (containers/build.sh, then copy it there)" >&2; exit 1; }
 [ -d "$COPILOT_HOME/copilot/backend" ] || echo "NOTE: no $COPILOT_HOME/copilot: the image's built-in copy of the site is used (containers/ada/setup_home.sh)."
-mkdir -p "$COPILOT_HOME/data" "$COPILOT_HOME/models"
+mkdir -p "$COPILOT_HOME/data" "$COPILOT_HOME/models" "$COPILOT_HOME/tmp"
 chmod 700 "$COPILOT_HOME/data"
 
 free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
@@ -103,7 +103,8 @@ MSG
 # ---- the site: code from $COPILOT_HOME (bound at the same path), data in $COPILOT_HOME/data ----
 ENVFILE=()
 [ -f "$COPILOT_HOME/secrets.env" ] && ENVFILE=(--env-file "$COPILOT_HOME/secrets.env")
-apptainer run --containall --cleanenv --bind "$COPILOT_HOME" ${ENVFILE[@]+"${ENVFILE[@]}"} \
+# /tmp from $COPILOT_HOME/tmp: with --containall the container's own /tmp is a few MB in memory
+apptainer run --containall --cleanenv --bind "$COPILOT_HOME,$COPILOT_HOME/tmp:/tmp" ${ENVFILE[@]+"${ENVFILE[@]}"} \
   --env "COPILOT_HOME=$COPILOT_HOME,OMICS_DATA_DIR=$COPILOT_HOME/data,PORT=$PORT,HOST=127.0.0.1$OLLAMA_ENV" \
   ${HTTPS_PROXY:+--env HTTPS_PROXY=$HTTPS_PROXY} \
   "$APP"

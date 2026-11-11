@@ -25,8 +25,11 @@ if [ ! -d copilot/.git ]; then
   BR=${SITE_BRANCH:-$(git -C "$HERE" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}
   echo "== copilot/ <- $SRC ($BR)"
   git clone --quiet -b "$BR" "$SRC" copilot
-  # the server's copy is its own repository from now on: releases are merged into it locally
+  # the server's copy is its own repository from now on: releases are merged into it locally.
+  # "upstream" = where site updates come from (GitHub when the source was a clone of it)
   git -C copilot remote rename origin upstream 2>/dev/null || true
+  URL=$(git -C "$SRC" remote get-url origin 2>/dev/null || true)
+  [ -n "$URL" ] && git -C copilot remote set-url upstream "$URL"
 else
   echo "== copilot/ exists ($(git -C copilot log --oneline -1))"
 fi

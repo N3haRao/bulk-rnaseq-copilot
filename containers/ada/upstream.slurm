@@ -28,5 +28,7 @@ CONFIG=$(readlink -f "$CONFIG")
 BIND=${BIND:-$(dirname "$CONFIG")}
 for d in /project /scratch /work; do [ -d "$d" ] && BIND="$BIND,$d"; done
 BIND="$BIND,$COPILOT_DIR"     # the live code bank release ($COPILOT_HOME/codebank-live), when there is one
+# a real /tmp for STAR, Salmon and rMATS (with --containall the container's own /tmp is a few MB in memory)
+mkdir -p "$COPILOT_DIR/tmp" && BIND="$BIND,$COPILOT_DIR/tmp:/tmp"
 echo "Config: $CONFIG   threads in the config should match --cpus-per-task (${SLURM_CPUS_PER_TASK:-?})"
 apptainer run --containall --cleanenv --bind "$BIND" --env COPILOT_HOME=$COPILOT_DIR --pwd "$(dirname "$CONFIG")" --app upstream "$APP" --config "$CONFIG"

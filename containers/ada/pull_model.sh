@@ -15,6 +15,8 @@ if [ ${#MODELS[@]} -eq 0 ]; then
   [ "${ALL_MODELS:-0}" = 1 ] && MODELS=(qwen3:30b qwen3:8b qwen3-coder:30b)
 fi
 module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true
+# Singularity 3.6+ works in place of Apptainer (e.g. fuji: singularity 3.7)
+if ! command -v apptainer >/dev/null && command -v singularity >/dev/null; then apptainer() { singularity "$@"; }; fi
 OLL=$COPILOT_HOME/ollama.sif
 [ -f "$OLL" ] || { echo "No $OLL. Copy the images there first (containers/build.sh)." >&2; exit 1; }
 mkdir -p "$COPILOT_HOME/models"

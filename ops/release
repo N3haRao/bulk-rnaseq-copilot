@@ -29,6 +29,7 @@ if [ -z "$PY" ] && [ -x "$SITE/backend/.venv/bin/python" ]; then PY="$SITE/backe
 if [ -z "$PY" ] && [ -z "$IN_CONTAINER" ] && [ -f "$SIF" ]; then
   # run this same command inside the image (it has Python, R, Node and the test tools)
   command -v apptainer >/dev/null || module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true
+  if ! command -v apptainer >/dev/null && command -v singularity >/dev/null; then apptainer() { singularity "$@"; }; fi
   BINDS="$HOME_DIR"
   if [ -n "${COPILOT_CODEBANK_REPO:-}" ]; then
     CB="$(readlink -f "$COPILOT_CODEBANK_REPO")"

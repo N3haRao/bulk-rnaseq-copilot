@@ -30,7 +30,9 @@ if [ -z "$PY" ] && [ -z "$IN_CONTAINER" ] && [ -f "$SIF" ]; then
   # run this same command inside the image (it has Python, R, Node and the test tools)
   command -v apptainer >/dev/null || module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true
   if ! command -v apptainer >/dev/null && command -v singularity >/dev/null; then apptainer() { singularity "$@"; }; fi
-  BINDS="$HOME_DIR"
+  # a real /tmp: with --containall the container's own /tmp is tiny (the tests write zips and R temp files)
+  mkdir -p "$HOME_DIR/tmp"
+  BINDS="$HOME_DIR,$HOME_DIR/tmp:/tmp"
   if [ -n "${COPILOT_CODEBANK_REPO:-}" ]; then
     CB="$(readlink -f "$COPILOT_CODEBANK_REPO")"
     case "$CB/" in "$(readlink -f "$HOME_DIR")"/*) ;; *) BINDS="$BINDS,$CB" ;; esac

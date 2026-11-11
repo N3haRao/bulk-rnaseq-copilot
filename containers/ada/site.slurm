@@ -31,6 +31,8 @@ set -euo pipefail
 USER=${USER:-$(id -un)}
 COPILOT_HOME=$(readlink -f "${COPILOT_HOME:-${COPILOT_DIR:-$HOME/rnaseq-copilot}}")
 module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true
+# Singularity 3.6+ works in place of Apptainer (e.g. fuji: singularity 3.7)
+if ! command -v apptainer >/dev/null && command -v singularity >/dev/null; then apptainer() { singularity "$@"; }; fi
 APP=$COPILOT_HOME/rnaseq-copilot.sif
 OLL=$COPILOT_HOME/ollama.sif
 [ -f "$APP" ] || { echo "Missing $APP (containers/build.sh, then copy it there)" >&2; exit 1; }

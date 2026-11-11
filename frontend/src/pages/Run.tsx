@@ -109,7 +109,7 @@ export default function Run() {
               { id: "de", label: "Differential expression" },
               { id: "heatmap", label: "Heatmap" },
               { id: "pathways", label: "Pathways" },
-              { id: "extras", label: "Splicing & isoforms" },
+              { id: "extras", label: "More analyses" },
               { id: "methods", label: "Methods & settings" },
             ]}
           />

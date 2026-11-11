@@ -32,8 +32,13 @@ def has_site_blocks() -> bool:
     return bool(mods) and all("site" in (m or {}) for m in mods.values())
 
 
-pytestmark = pytest.mark.skipif(not has_site_blocks() or shutil.which("git") is None,
-                                reason="needs a code bank with site blocks (v0.6.0+) and git")
+def site_is_git() -> bool:
+    return shutil.which("git") is not None and subprocess.run(
+        ["git", "-C", str(SITE), "rev-parse", "--is-inside-work-tree"], capture_output=True).returncode == 0
+
+
+pytestmark = pytest.mark.skipif(not has_site_blocks() or not site_is_git(),
+                                reason="needs a code bank with site blocks (v0.6.0+), git, and the site as a git repository")
 
 
 def sh(cwd, *args):

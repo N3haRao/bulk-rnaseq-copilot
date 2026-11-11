@@ -7,7 +7,7 @@ Two images:
 | Image | Contains | Size |
 |---|---|---|
 | `rnaseq-copilot.sif` (`rnaseq-copilot.def`) | The software: Python for the website, Node to build its frontend, Chromium for PDFs, R 4.5 with every code-bank package (DESeq2, apeglm, fgsea + the MSigDB database, DEXSeq, stageR, tximport, annotation and example data), and fastp, STAR, samtools, Salmon and rMATS for the FASTQ steps. Also a copy of the site and code bank, used only when no site folder is mounted | about 6-8 GB |
-| `ollama.sif` (`ollama.def`) | The Ollama model server for the open-weight assistants (`qwen3:8b`) and the release agent (`qwen3-coder:30b`). Models are kept outside the image, in a folder bound to `/models` | about 2 GB |
+| `ollama.sif` (`ollama.def`) | The Ollama model server for the open-weight assistants (`qwen3:30b` on a GPU with 20 GB or more, `qwen3:8b` otherwise) and the release agent (`qwen3-coder:30b`). Models are kept outside the image, in a folder bound to `/models` | about 2 GB |
 
 **The code is not taken from the image on the server.** With `COPILOT_HOME` set, the site runs from `$COPILOT_HOME/copilot` and the code bank from `$COPILOT_HOME/codebank-live`, both mounted into the container at the same path (`site-env.sh`). A code bank release or a site update then needs only a restart (see [docs/RELEASES.md](../docs/RELEASES.md)). Rebuild the image only when the software changes: `env-*.yml`, `backend/requirements.txt` or `frontend/package-lock.json`.
 
@@ -36,7 +36,7 @@ apptainer run --app tests containers/build/rnaseq-copilot.sif
 mkdir -p ~/rnaseq-copilot                    # or a project folder: COPILOT_HOME=/project/<lab>/rnaseq-copilot
 scp containers/build/*.sif ada:~/rnaseq-copilot/
 # on Ada, from a clone of this repository:
-COPILOT_HOME=~/rnaseq-copilot containers/ada/pull_model.sh     # qwen3:8b (~5 GB) + qwen3-coder:30b (~19 GB); needs internet
+COPILOT_HOME=~/rnaseq-copilot containers/ada/pull_model.sh     # site model (qwen3:30b on a 20 GB+ GPU, else qwen3:8b) + qwen3-coder:30b; needs internet
 COPILOT_HOME=~/rnaseq-copilot containers/ada/setup_home.sh     # copilot/ and codebank/ folders, first release live
 ```
 
@@ -78,7 +78,7 @@ The same scripts work without a scheduler. Step by step: [docs/fuji_setup_comman
 
 - `containers/ada/start_site.sh` starts the site as a background process that keeps running after you log out (with SLURM it submits the job instead). `stop_site.sh` and `restart_site.sh` stop and restart it. The log prints the tunnel command, `ssh -N -L 8000:127.0.0.1:<port> you@fuji.nri.bcm.edu`.
 - Releases: `scripts/release.sh` runs `release.slurm` directly. It reuses the site's model server, so a single Ollama holds the GPU.
-- GPU memory: `qwen3-coder:30b` with a 32k context uses about 21 GB on the A30, with flash attention and an 8-bit KV cache. The site model, `qwen3:8b`, uses about 6 GB. Only one fits at a time, so Ollama swaps them as needed (`OLLAMA_MAX_LOADED_MODELS=1`).
+- GPU memory: on the A30 both models are Qwen3 30B, run fully on the GPU. The site's assistants use `qwen3:30b` (about 19–20 GB), chosen automatically on a GPU with 20 GB or more; `OLLAMA_MODEL=...` overrides it. The release agent uses `qwen3-coder:30b` (about 21 GB with a 32k context, using flash attention and an 8-bit KV cache). Only one fits at a time, so Ollama swaps them in 10–20 s (`OLLAMA_MAX_LOADED_MODELS=1`). During a release the site's assistant waits for the GPU (up to `OLLAMA_TIMEOUT`, 300 s), then falls back to its built-in rules.
 - FASTQ jobs: `nohup bash containers/ada/upstream.slurm ... &`.
 
 ## Code bank releases

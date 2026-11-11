@@ -292,7 +292,8 @@ def _restart(out) -> None:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         out(f"Restart ({cmd}): {'done' if r.returncode == 0 else 'FAILED: ' + r.stderr.strip()}")
     else:
-        out("Restart the site so it uses the new version (e.g. scancel <site job>; sbatch containers/ada/site.slurm).")
+        out("Restart the site so it uses the new version: containers/ada/restart_site.sh "
+            "(or set COPILOT_RESTART_CMD to do it automatically).")
 
 
 def rollback(p: Paths, yes: bool = False, user: str | None = None, out=print) -> dict:

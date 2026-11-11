@@ -205,4 +205,3 @@ def bundle(run_dir: Path, dest_dir: Path) -> Path:
                                   base_dir=run_dir.name)
         Path(tmp).replace(target)
     return target
-    

@@ -1,20 +1,26 @@
 # =============================================================================
 # rnaseq-copilot.def  --  Apptainer image of the RNA-seq analysis site
 # =============================================================================
-# One image with everything the site and the code bank need:
-#   * the website (FastAPI backend + built React frontend) and Chromium for PDFs
+# One image with the software the site and the code bank need:
+#   * Python for the website (FastAPI backend), Node for building its frontend, Chromium for PDFs
 #   * R 4.5 with DESeq2, apeglm, fgsea/msigdbr (+ the MSigDB database), DEXSeq, stageR,
 #     tximport, annotation and example data: main pipeline, splicing, isoforms
 #   * fastp, STAR, samtools, Salmon, rMATS for codebank/later/ (FASTQ -> results)
-#   * the code bank as a git clone at the commit the site pins (so every run
-#     records its exact commit)
+#   * a copy of the site and of the code bank (git clone at the pinned commit), used only when
+#     COPILOT_HOME is not set
+# On a server the code is NOT taken from the image: with COPILOT_HOME set and bound at the same path,
+# the site runs from $COPILOT_HOME/copilot and the code bank from $COPILOT_HOME/codebank-live
+# (containers/site-env.sh). A code bank release then needs a site restart, not a new image; rebuild the
+# image only when the software changes (containers/env-*.yml, backend/requirements.txt, package-lock.json).
 # The open-weight model runs in a separate image (ollama.def).
 #
 # Build with containers/build.sh, which prepares the build folder. Do not run
 # `apptainer build` on this file directly from the repository.
 #
 # Run (see containers/README.md and containers/ada/):
-#   apptainer run --containall --cleanenv --bind /path/to/data:/data rnaseq-copilot.sif
+#   apptainer run --containall --cleanenv --bind $COPILOT_HOME --env COPILOT_HOME=$COPILOT_HOME,OMICS_DATA_DIR=$COPILOT_HOME/data rnaseq-copilot.sif
+#   apptainer run --containall --cleanenv --bind /path/to/data:/data rnaseq-copilot.sif     (the image's own copy)
+#   apptainer run --app release ... rnaseq-copilot.sif status      (ops/release inside the image)
 #   apptainer run --app upstream ... rnaseq-copilot.sif --config upstream.yaml
 #   apptainer run --app tests rnaseq-copilot.sif
 # =============================================================================
@@ -41,10 +47,16 @@ Stage: final
 
 %files from frontend
     /src/frontend/dist /opt/app/frontend/dist
+    /src/frontend/node_modules /opt/app/frontend/node_modules
+    /src/frontend/package-lock.json /opt/app/frontend/package-lock.json
+    /usr/local/bin/node /opt/node/bin/node
+    /usr/local/lib/node_modules /opt/node/lib/node_modules
 
 %files
     backend /opt/app/backend
     codebank /opt/app/codebank
+    ops /opt/app/ops
+    containers/site-env.sh /opt/app/site-env.sh
     containers/env-r.yml /opt/envs/env-r.yml
     containers/env-tools.yml /opt/envs/env-tools.yml
     containers/env-app.yml /opt/envs/env-app.yml
@@ -70,8 +82,13 @@ Stage: final
     micromamba create -y -p /opt/conda/envs/app -f /opt/envs/env-app.yml
     micromamba clean -a -y
 
-    # ---- website backend ----
-    /opt/conda/envs/app/bin/pip install --no-cache-dir -r /opt/app/backend/requirements.txt
+    # ---- website backend (+ pytest: the release checks run the site's tests) ----
+    /opt/conda/envs/app/bin/pip install --no-cache-dir -r /opt/app/backend/requirements.txt pytest==8.3.5
+
+    # ---- Node (copied from the frontend stage) to rebuild the frontend of a site run from a folder ----
+    ln -sf ../lib/node_modules/npm/bin/npm-cli.js /opt/node/bin/npm
+    ln -sf ../lib/node_modules/npm/bin/npx-cli.js /opt/node/bin/npx
+    /opt/node/bin/node --version
     rm -rf /opt/app/backend/.venv /opt/app/backend/.pytest_cache
     find /opt/app/backend -name __pycache__ -type d -prune -exec rm -rf {} +
 
@@ -100,6 +117,7 @@ Stage: final
       /opt/conda/envs/tools/bin/fastp --version 2>&1
       echo "rMATS $(/opt/conda/envs/tools/bin/rmats.py --version 2>&1 | tail -1)"
       /opt/conda/envs/app/bin/python --version
+      echo "node $(/opt/node/bin/node --version)"
     } > /opt/app/IMAGE_VERSIONS.txt
     micromamba env export -p /opt/conda/envs/r > /opt/app/env-r.lock.yml
     micromamba env export -p /opt/conda/envs/tools > /opt/app/env-tools.lock.yml
@@ -109,7 +127,7 @@ Stage: final
 
 %environment
     # tools first: rmats.py starts with "#!/usr/bin/env python" and needs the tools env's Python
-    export PATH=/opt/conda/envs/tools/bin:/opt/conda/envs/r/bin:/opt/conda/envs/app/bin:/usr/local/bin:/usr/bin:/bin
+    export PATH=/opt/conda/envs/tools/bin:/opt/conda/envs/r/bin:/opt/conda/envs/app/bin:/opt/node/bin:/usr/local/bin:/usr/bin:/bin
     export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
     export CODEBANK_DIR=/opt/app/codebank
     export FRONTEND_DIST=/opt/app/frontend/dist
@@ -124,56 +142,71 @@ Stage: final
 %runscript
     # The website. Data (uploads, runs, saved API key) live in $OMICS_DATA_DIR: bind a writable folder there.
     set -eu
+    . /opt/app/site-env.sh
     PORT=${PORT:-8000}
     HOST=${HOST:-127.0.0.1}
     if ! mkdir -p "$OMICS_DATA_DIR" 2>/dev/null || [ ! -w "$OMICS_DATA_DIR" ]; then
       echo "The data folder $OMICS_DATA_DIR is not writable. Run with --bind /path/to/your/data:/data" >&2
       exit 1
     fi
+    ensure_frontend
+    echo "Code: $CODE_SOURCE"
     echo "RNA-seq analysis site: http://$HOST:$PORT  (data in $OMICS_DATA_DIR; model at $OLLAMA_URL)"
-    cd /opt/app/backend
+    cd "$SITE_DIR/backend"
     exec /opt/conda/envs/app/bin/uvicorn app.main:app --host "$HOST" --port "$PORT"
 
 %apprun upstream
-    # FASTQ -> counts, splicing and isoforms (codebank/later/scripts/run_upstream.R); arguments are passed on.
-    exec /opt/conda/envs/r/bin/Rscript /opt/app/codebank/later/scripts/run_upstream.R "$@"
+    # FASTQ -> counts, splicing and isoforms (later/scripts/run_upstream.R of the code bank in use); arguments are passed on.
+    . /opt/app/site-env.sh
+    exec /opt/conda/envs/r/bin/Rscript "$CODEBANK_DIR/later/scripts/run_upstream.R" "$@"
 
 %apprun rscript
     # Any code-bank entry point, e.g.: apptainer run --app rscript img.sif /opt/app/codebank/splicing/scripts/run_splicing.R --help
     exec /opt/conda/envs/r/bin/Rscript "$@"
 
+%apprun release
+    # ops/release (integrate / approve / preview / status / rollback) with the image's Python and Node.
+    # Needs COPILOT_HOME bound at the same path (containers/ada/release.slurm and ops/release do this).
+    . /opt/app/site-env.sh
+    [ "$SITE_DIR" != /opt/app ] || { echo "Set COPILOT_HOME (with copilot/ and codebank/ in it) and bind it." >&2; exit 1; }
+    exec "$SITE_DIR/ops/release" "$@"
+
 %apprun tests
     # The code bank's module tests and the website's tests, inside the image (writes to a temporary copy).
     set -eu
+    . /opt/app/site-env.sh
     T=$(mktemp -d)
-    cp -r /opt/app/codebank "$T/codebank"
+    cp -r "$CODEBANK_DIR" "$T/codebank"
     cd "$T/codebank"
-    for t in splicing/tests/run_splicing_tests.R isoforms/tests/run_isoform_tests.R later/tests/run_later_tests.R; do
+    for t in splicing/tests/run_splicing_tests.R isoforms/tests/run_isoform_tests.R compare/tests/run_compare_tests.R later/tests/run_later_tests.R; do
+      [ -f "$t" ] || continue
       echo "== $t"; Rscript "$t" | tail -3
     done
-    cp -r /opt/app/backend "$T/backend"
+    cp -r "$SITE_DIR/backend" "$T/backend"
     cd "$T/backend"
-    /opt/conda/envs/app/bin/pip install --quiet --no-cache-dir --target "$T/pylib" pytest==8.3.5
-    CODEBANK_DIR="$T/codebank" PYTHONPATH="$T/pylib" /opt/conda/envs/app/bin/python -m pytest -q -p no:cacheprovider
+    CODEBANK_DIR="$T/codebank" /opt/conda/envs/app/bin/python -m pytest -q -p no:cacheprovider
     rm -rf "$T"
 
 %test
     set -eu
     export PATH=/opt/conda/envs/tools/bin:/opt/conda/envs/r/bin:/opt/conda/envs/app/bin:$PATH
-    Rscript -e 'for (p in c("DESeq2","apeglm","fgsea","msigdbr","DEXSeq","stageR","tximport","org.Hs.eg.db","org.Mm.eg.db","ggplot2","pheatmap","rmarkdown")) stopifnot(requireNamespace(p, quietly = TRUE)); cat("R packages: ok\n")'
+    Rscript -e 'for (p in c("DESeq2","apeglm","fgsea","msigdbr","babelgene","DEXSeq","stageR","tximport","org.Hs.eg.db","org.Mm.eg.db","ggplot2","pheatmap","rmarkdown")) stopifnot(requireNamespace(p, quietly = TRUE)); cat("R packages: ok\n")'
     for t in fastp STAR samtools salmon rmats.py pandoc; do command -v $t >/dev/null || { echo "missing $t"; exit 1; }; done
-    /opt/conda/envs/app/bin/python -c "import fastapi, anthropic, pptx, playwright; print('Python packages: ok')"
+    /opt/conda/envs/app/bin/python -c "import fastapi, anthropic, pptx, playwright, pytest; print('Python packages: ok')"
+    /opt/node/bin/npm --version >/dev/null
     test -f /opt/app/frontend/dist/index.html
     git -C /opt/app/codebank rev-parse HEAD >/dev/null
     echo "image test: ok"
 
 %labels
     org.opencontainers.image.title RNA-seq analysis site (bulk RNA-seq copilot)
-    org.opencontainers.image.source https://github.com/N3haRao/agentic-omics-testbed
+    org.opencontainers.image.source https://github.com/N3haRao/bulk-rnaseq-copilot
 
 %help
     RNA-seq analysis site with the lab's code bank (DESeq2 pipeline, splicing, isoforms, FASTQ tools).
-      Site:      apptainer run --containall --cleanenv --bind DATA_DIR:/data rnaseq-copilot.sif   (PORT, HOST, OLLAMA_URL)
+      Site:      apptainer run --containall --cleanenv --bind $COPILOT_HOME --env COPILOT_HOME=$COPILOT_HOME,OMICS_DATA_DIR=$COPILOT_HOME/data rnaseq-copilot.sif
+                 (code from $COPILOT_HOME/copilot and codebank-live; without COPILOT_HOME: the image's copy, data in /data)
+      Releases:  apptainer run --app release ... rnaseq-copilot.sif status     (see docs/RELEASES.md)
       FASTQ:     apptainer run --app upstream --bind ... rnaseq-copilot.sif --config upstream.yaml
       R scripts: apptainer run --app rscript rnaseq-copilot.sif /opt/app/codebank/<script>.R ...
       Tests:     apptainer run --app tests rnaseq-copilot.sif

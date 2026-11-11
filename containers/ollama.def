@@ -1,7 +1,8 @@
 # =============================================================================
 # ollama.def  --  the open-weight model server (Ollama) for the site's assistants
 # =============================================================================
-# The setup chat and the report writer use Qwen3 through Ollama. Models are NOT
+# The setup chat and the report writer use Qwen3 through Ollama; the release agent uses qwen3-coder:30b
+# (Ollama 0.12 or newer). Models are NOT
 # inside the image: keep them in a folder you bind to /models (pull once with
 # containers/ada/pull_model.sh), so the image stays small and models are shared.
 #
@@ -9,7 +10,7 @@
 #   (drop --nv on a node without a GPU: qwen3:8b then runs on the CPU, slowly)
 # =============================================================================
 Bootstrap: docker
-From: ollama/ollama:0.9.0
+From: ollama/ollama:0.12.11
 
 %environment
     export OLLAMA_MODELS=${OLLAMA_MODELS:-/models}

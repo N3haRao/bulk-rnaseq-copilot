@@ -13,8 +13,9 @@ from .base import LLMError, LLMUnavailable
 
 class OllamaClient:
     def __init__(self, model: str, url: str = "http://localhost:11434", timeout: float = 180.0,
-                 keep_alive: str = "30m") -> None:
+                 keep_alive: str = "30m", num_ctx: int = 8192) -> None:
         self.model = model
+        self.num_ctx = num_ctx
         self.url = url.rstrip("/")
         self.timeout = timeout
         self.keep_alive = keep_alive
@@ -28,7 +29,7 @@ class OllamaClient:
             "stream": False,
             "think": False,          # Qwen3: answer directly, no hidden reasoning tokens
             "keep_alive": self.keep_alive,
-            "options": {"temperature": 0, "seed": 42, "num_ctx": 8192},
+            "options": {"temperature": 0, "seed": 42, "num_ctx": self.num_ctx},
         }
         try:
             r = httpx.post(f"{self.url}/api/chat", json=body, timeout=self.timeout)

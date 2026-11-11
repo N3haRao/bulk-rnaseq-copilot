@@ -490,37 +490,30 @@ def chat_file(job_id: str, conv_id: str, rel: str, download: bool = False):
 # ---- Optional analyses: splicing and isoforms ---------------------------------------------------
 @app.get("/api/runs/{job_id}/extras")
 def list_extras(job_id: str) -> dict:
+    """The optional analyses the code bank offers on this run (from its manifest), with their forms and latest results."""
     _run_dir_or_404(job_id)
-    return {"available": extras.available(), "analyses": extras.all_for(jobs.job_dir(job_id))}
+    job = jobs.load(job_id)
+    return {"available": extras.available(), "forms": {m: extras.form_spec(m, job) for m in extras.modules()},
+            "analyses": extras.all_for(jobs.job_dir(job_id))}
 
 
-@app.post("/api/runs/{job_id}/extras/splicing")
-def start_splicing(job_id: str, files: list[UploadFile] = File(...), b1_group: str = Form("test"),
-                   count_type: str = Form("JCEC"), fdr_cutoff: float = Form(0.05), delta_psi_cutoff: float = Form(0.1),
-                   min_reads_per_sample: float = Form(10)) -> dict:
+@app.post("/api/runs/{job_id}/extras/{module}")
+async def start_extra(job_id: str, module: str, request: Request) -> dict:
+    """Start an optional analysis. Multipart form: one file field per manifest input (by its name), plus the form settings."""
     run_dir = _run_dir_or_404(job_id)
-    if "splicing" not in extras.available():
-        raise HTTPException(status_code=409, detail="This code bank version has no splicing module (v0.3.0 or newer needed).")
+    if module not in extras.modules():
+        raise HTTPException(status_code=404, detail=f"This code bank offers no '{module}' analysis on a run.")
+    form = await request.form()
+    files: dict[str, list] = {}
+    fields: dict[str, str] = {}
+    for key, value in form.multi_items():
+        if hasattr(value, "filename") and hasattr(value, "file"):
+            if value.filename:
+                files.setdefault(key, []).append((value.filename, value.file))
+        else:
+            fields[key] = str(value)
     try:
-        return extras.extras.start_splicing(jobs.load(job_id), jobs.job_dir(job_id), run_dir,
-                                            [(f.filename or "file", f.file) for f in files], b1_group=b1_group,
-                                            count_type=count_type, fdr_cutoff=fdr_cutoff, delta_psi_cutoff=delta_psi_cutoff,
-                                            min_reads_per_sample=min_reads_per_sample)
-    except extras.ExtraError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
-
-@app.post("/api/runs/{job_id}/extras/isoforms")
-def start_isoforms(job_id: str, quant_zip: UploadFile = File(...), annotation: UploadFile | None = File(None),
-                   min_delta_usage: float = Form(0.1), dui_alpha: float = Form(0.05)) -> dict:
-    run_dir = _run_dir_or_404(job_id)
-    if "isoforms" not in extras.available():
-        raise HTTPException(status_code=409, detail="This code bank version has no isoform module (v0.4.0 or newer needed).")
-    ann = (annotation.filename or "annotation", annotation.file) if annotation is not None and annotation.filename else None
-    try:
-        return extras.extras.start_isoforms(jobs.load(job_id), jobs.job_dir(job_id), run_dir,
-                                            (quant_zip.filename or "quant.zip", quant_zip.file), ann,
-                                            min_delta_usage=min_delta_usage, dui_alpha=dui_alpha)
+        return extras.extras.start(module, jobs.load(job_id), jobs.job_dir(job_id), run_dir, files, fields)
     except extras.ExtraError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

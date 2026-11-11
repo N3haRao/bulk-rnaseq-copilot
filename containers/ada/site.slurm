@@ -1,69 +1,102 @@
 #!/usr/bin/env bash
 # =============================================================================
-# site.slurm  --  run the RNA-seq analysis site (and its model) as a SLURM job
+# site.slurm  --  run the RNA-seq analysis site (and, optionally, its model) as a SLURM job
 # =============================================================================
-#   sbatch containers/ada/site.slurm                    # then read the log for the tunnel command
-#   COPILOT_DIR=/project/lab/rnaseq-copilot sbatch containers/ada/site.slurm
+#   sbatch containers/ada/site.slurm                       # then read the log for the tunnel command
+#   sbatch --gres=gpu:1 containers/ada/site.slurm          # on a server with GPUs (the model uses it)
+#   OLLAMA_MODEL=none sbatch containers/ada/site.slurm     # no open-weight model (Claude or built-in rules)
+#   containers/ada/start_site.sh                           # the same, with or without SLURM (e.g. fuji: one
+#                                                          # GPU server, no scheduler: runs it in the background)
 #
-# $COPILOT_DIR holds rnaseq-copilot.sif, ollama.sif, models/ (pull_model.sh),
-# data/ (uploads, runs, the saved API key: keep it private) and, optionally,
-# secrets.env with ANTHROPIC_API_KEY=... (chmod 600) instead of the Settings page.
-# Adjust the #SBATCH lines to Ada's partitions; the GPU is for the model only.
+# $COPILOT_HOME (default ~/rnaseq-copilot; set up with containers/ada/setup_home.sh) holds:
+#   rnaseq-copilot.sif ollama.sif   the images (software only)
+#   copilot/                        the live site (git); code bank releases are merged in by ops/release
+#   codebank/                       the bioinformaticians' code bank (git, tagged releases)
+#   codebank-live -> codebank-releases/vX.Y.Z   the approved release the site uses
+#   models/  data/  secrets.env     models, uploads/runs/API key (private), optional ANTHROPIC_API_KEY=...
+# The site code and the code bank are read from these folders, not from the image, so after
+# `ops/release approve` a restart (scancel + sbatch, or containers/ada/restart_site.sh) is all it takes.
+#
+# No #SBATCH partition or GPU line: the default partition is used (Ada: defq, one node, no GPU) and the
+# model runs on the CPU, slowly. Add --partition / --gres on the sbatch command line on another server.
 # =============================================================================
 #SBATCH --job-name=rnaseq-copilot
 #SBATCH --time=08:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:1
 #SBATCH --output=rnaseq-copilot-%j.log
 
 set -euo pipefail
-COPILOT_DIR=${COPILOT_DIR:-$HOME/rnaseq-copilot}
+USER=${USER:-$(id -un)}
+COPILOT_HOME=$(readlink -f "${COPILOT_HOME:-${COPILOT_DIR:-$HOME/rnaseq-copilot}}")
 MODEL=${OLLAMA_MODEL:-qwen3:8b}
 module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true
-APP=$COPILOT_DIR/rnaseq-copilot.sif
-OLL=$COPILOT_DIR/ollama.sif
-for f in "$APP" "$OLL"; do [ -f "$f" ] || { echo "Missing $f (containers/build.sh, then copy here)" >&2; exit 1; }; done
-mkdir -p "$COPILOT_DIR/data" "$COPILOT_DIR/models"
-chmod 700 "$COPILOT_DIR/data"
+APP=$COPILOT_HOME/rnaseq-copilot.sif
+OLL=$COPILOT_HOME/ollama.sif
+[ -f "$APP" ] || { echo "Missing $APP (containers/build.sh, then copy it there)" >&2; exit 1; }
+[ -d "$COPILOT_HOME/copilot/backend" ] || echo "NOTE: no $COPILOT_HOME/copilot: the image's built-in copy of the site is used (containers/ada/setup_home.sh)."
+mkdir -p "$COPILOT_HOME/data" "$COPILOT_HOME/models"
+chmod 700 "$COPILOT_HOME/data"
 
 free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 PORT=$(free_port)
-OPORT=$(free_port)
-NV=""; command -v nvidia-smi >/dev/null && nvidia-smi >/dev/null 2>&1 && NV="--nv"
-NAME=ollama_${SLURM_JOB_ID:-$$}
+NV=""; command -v nvidia-smi >/dev/null && nvidia-smi -L >/dev/null 2>&1 && NV="--nv"
 
-# ---- the model server ----
-apptainer instance start $NV --containall --bind "$COPILOT_DIR/models:/models" \
-  --env OLLAMA_HOST=127.0.0.1:$OPORT "$OLL" "$NAME" >/dev/null
-trap 'apptainer instance stop "$NAME" >/dev/null 2>&1 || true' EXIT
-for _ in $(seq 1 60); do curl -s "http://127.0.0.1:$OPORT/api/tags" >/dev/null && break; sleep 1; done
-if ! curl -s "http://127.0.0.1:$OPORT/api/tags" | grep -q "\"${MODEL%%:*}"; then
-  echo "WARNING: model $MODEL is not in $COPILOT_DIR/models. Run containers/ada/pull_model.sh on a login node;"
-  echo "         until then the site uses its built-in rules instead of the assistant."
+# ---- the model server (optional) ----
+OLLAMA_ENV=""
+if [ "$MODEL" != none ] && [ -f "$OLL" ]; then
+  OPORT=$(free_port)
+  NAME=ollama_${SLURM_JOB_ID:-$$}
+  # flash attention + 8-bit KV cache: the release agent's qwen3-coder:30b (~19 GB) with a 32k context fits
+  # a 24 GB GPU (A30) next to nothing else; Ollama unloads the idle site model to make room for it
+  apptainer instance start $NV --containall --bind "$COPILOT_HOME/models:/models" \
+    --env OLLAMA_HOST=127.0.0.1:$OPORT,OLLAMA_NUM_PARALLEL=1,OLLAMA_FLASH_ATTENTION=1,OLLAMA_KV_CACHE_TYPE=q8_0,OLLAMA_MAX_LOADED_MODELS=1 \
+    "$OLL" "$NAME" >/dev/null
+  trap 'apptainer instance stop "$NAME" >/dev/null 2>&1 || true' EXIT
+  for _ in $(seq 1 60); do curl -s "http://127.0.0.1:$OPORT/api/tags" >/dev/null && break; sleep 1; done
+  if ! curl -s "http://127.0.0.1:$OPORT/api/tags" | grep -q "\"${MODEL%%:*}"; then
+    echo "WARNING: model $MODEL is not in $COPILOT_HOME/models. Run containers/ada/pull_model.sh on a login node;"
+    echo "         until then the site uses Claude (if a key is saved) or its built-in rules."
+  fi
+  echo "Model server: $MODEL on the ${NV:+GPU}${NV:-CPU (no GPU found: answers are slow)}, port $OPORT"
+  OLLAMA_ENV=",OLLAMA_URL=http://127.0.0.1:$OPORT,OLLAMA_MODEL=$MODEL"
+else
+  if [ "$MODEL" = none ]; then WHY="OLLAMA_MODEL=none"; else WHY="no $OLL"; fi
+  echo "Model server: not started ($WHY); the site uses Claude (if a key is saved) or its built-in rules."
+  OLLAMA_ENV=",OLLAMA_URL=http://127.0.0.1:9"
 fi
-echo "Model server: ${NV:+GPU, }port $OPORT"
 
 # ---- how to reach the site ----
-NODE=$(hostname)
+NODE=$(hostname -f 2>/dev/null || hostname)
+# who runs the site and where its model server listens (restart_site.sh and release.slurm read this)
+echo "${SLURM_JOB_ID:-pid:$$} $NODE $PORT ${OPORT:-none}" > "$COPILOT_HOME/site.job"
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  TUNNEL="ssh -N -L 8000:127.0.0.1:$PORT -J $USER@${LOGIN_HOST:-${ADA_LOGIN:-ada.nri.bcm.edu}} $USER@$NODE"
+  STOP="scancel $SLURM_JOB_ID"
+  NOTE="If $NODE is the login node itself (a one-node cluster), the shorter
+    ssh -N -L 8000:127.0.0.1:$PORT $USER@${LOGIN_HOST:-${ADA_LOGIN:-ada.nri.bcm.edu}}   works."
+else
+  TUNNEL="ssh -N -L 8000:127.0.0.1:$PORT $USER@$NODE"
+  STOP="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/stop_site.sh"
+  NOTE="(No SLURM: the site runs as a background process on $NODE.)"
+fi
 cat <<MSG
 ================================================================================
-The site starts on $NODE, port $PORT (only reachable from that node).
+The site starts on $NODE, port $PORT (only reachable from that machine).
 On your own computer, open a tunnel and keep it open:
 
-    ssh -N -L 8000:127.0.0.1:$PORT -J $USER@<ada-login-host> $USER@$NODE
+    $TUNNEL
 
-then open http://localhost:8000 . (If jumping to compute nodes is not allowed, ask
-the Ada admins for the recommended way to forward a port to a running job.)
-Stop the site with:  scancel ${SLURM_JOB_ID:-<job id>}
+then open http://localhost:8000 .
+$NOTE
+Stop the site with:  $STOP
 ================================================================================
 MSG
 
-# ---- the site ----
+# ---- the site: code from $COPILOT_HOME (bound at the same path), data in $COPILOT_HOME/data ----
 ENVFILE=()
-[ -f "$COPILOT_DIR/secrets.env" ] && ENVFILE=(--env-file "$COPILOT_DIR/secrets.env")
-apptainer run --containall --cleanenv --bind "$COPILOT_DIR/data:/data" ${ENVFILE[@]+"${ENVFILE[@]}"} \
-  --env PORT=$PORT,HOST=127.0.0.1,OLLAMA_URL=http://127.0.0.1:$OPORT,OLLAMA_MODEL=$MODEL \
+[ -f "$COPILOT_HOME/secrets.env" ] && ENVFILE=(--env-file "$COPILOT_HOME/secrets.env")
+apptainer run --containall --cleanenv --bind "$COPILOT_HOME" ${ENVFILE[@]+"${ENVFILE[@]}"} \
+  --env "COPILOT_HOME=$COPILOT_HOME,OMICS_DATA_DIR=$COPILOT_HOME/data,PORT=$PORT,HOST=127.0.0.1$OLLAMA_ENV" \
   ${HTTPS_PROXY:+--env HTTPS_PROXY=$HTTPS_PROXY} \
   "$APP"
-  

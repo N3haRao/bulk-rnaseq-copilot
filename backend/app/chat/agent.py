@@ -213,31 +213,27 @@ class Conversation:
 
 
 def _copy_extras(job_dir: Path, ws_root: Path) -> None:
-    """Finished optional analyses (splicing, isoforms) go into workspace/extras/<module>/ (a copy, like run/)."""
+    """Finished optional analyses go into workspace/extras/<module>/ (a copy, like run/)."""
     import shutil
     from .. import extras
-    for module in extras.MODULES:
-        d = extras.latest(job_dir, module) if (job_dir / "extras" / module).exists() else None
-        if d is None or json.loads((d / "extra.json").read_text()).get("status") not in ("success", "success_with_errors"):
-            continue
+    for module, d in extras.finished(job_dir):
         rd = extras.run_dir_of(d)
         if rd and not (ws_root / "extras" / module).exists():
             shutil.copytree(rd, ws_root / "extras" / module, ignore=shutil.ignore_patterns("*.rds", "inputs"))
 
 
 def _extras_context(ws_root: Path) -> dict:
+    """For the system prompt: each copied analysis's key files (manifest site.results.chat_files) and headline numbers."""
+    from .. import extras
     out = {}
-    for module, files in {"splicing": ["S02_splicing_results/splicing_summary.json", "S02_splicing_results/splicing_events_all.csv",
-                                       "S02_splicing_results/splicing_events_significant.csv", "S02_splicing_results/splicing_vs_expression.csv",
-                                       "S03_splicing_enrichment/enrichment_summary.json", "S04_splicing_report/methods.md"],
-                          "isoforms": ["I02_differential_isoform_expression/dei_summary.json", "I02_differential_isoform_expression/dei_results_all.csv",
-                                       "I03_differential_isoform_usage/dui_summary.json", "I03_differential_isoform_usage/dui_genes.csv",
-                                       "I03_differential_isoform_usage/dui_transcripts_all.csv", "I04_isoform_report/methods.md"]}.items():
+    for module, m in extras.modules().items():
         base = ws_root / "extras" / module
-        if base.exists():
-            summary = json.loads((base / "run_summary.json").read_text()) if (base / "run_summary.json").exists() else {}
-            out[module] = {"files": [f"extras/{module}/{f}" for f in files if (base / f).exists()],
-                           "headline": {k: v for k, v in summary.items() if k not in ("warnings", "steps", "top_events", "by_event_type")}}
+        if not base.exists():
+            continue
+        files = (m["site"].get("results") or {}).get("chat_files") or []
+        summary = json.loads((base / "run_summary.json").read_text()) if (base / "run_summary.json").exists() else {}
+        out[module] = {"files": [f"extras/{module}/{f}" for f in files if (base / f).exists()],
+                       "headline": {k: v for k, v in summary.items() if k not in ("warnings", "steps", "top_events", "by_event_type")}}
     return out
 
 

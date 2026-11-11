@@ -23,14 +23,14 @@ if [ "$WHAT" = all ] || [ "$WHAT" = app ]; then
   trap 'rm -rf "$CTX"' EXIT
   echo "Preparing the build folder in $CTX ..."
   # the site's tracked files only (no data/, .venv, node_modules)
-  git archive HEAD backend frontend containers | tar -x -C "$CTX"
+  git archive HEAD backend frontend containers ops | tar -x -C "$CTX"
   # the code bank as a real git clone at the pinned commit, so runs record their exact commit
   COMMIT=$(git -C codebank rev-parse HEAD)
   git -c advice.detachedHead=false clone --quiet --no-local codebank "$CTX/codebank"
   git -C "$CTX/codebank" -c advice.detachedHead=false checkout --quiet "$COMMIT"
   git -C "$CTX/codebank" remote set-url origin "$(git -C codebank remote get-url origin)"
   echo "$(git describe --always --dirty) ($(git rev-parse --abbrev-ref HEAD))" > "$CTX/VERSION"
-  if ! git diff --quiet HEAD -- backend frontend containers; then
+  if ! git diff --quiet HEAD -- backend frontend containers ops; then
     echo "NOTE: you have uncommitted changes in backend/frontend/containers; the image uses the last commit." >&2
   fi
   echo "Building rnaseq-copilot.sif (code bank $COMMIT) ..."

@@ -1,19 +1,18 @@
-"""Optional analyses on top of a finished run: alternative splicing and transcript isoforms.
+"""Optional analyses on top of a finished run, driven by the code bank's manifest.
 
-Both use the run's own comparison, so the user only adds the extra input:
+Every code-bank module whose manifest entry has `site: {attach_to: run}` is offered on a finished run
+(splicing and isoforms today). The manifest says everything the site needs, so a new module, setting,
+figure or table needs no site code:
 
-  splicing   rMATS output tables (or a .zip of them)      -> code bank splicing/ module
-             compared with this run's gene-level results (de_run)
-  isoforms   a .zip of Salmon output folders (<sample>/quant.sf) and, unless the
-             transcript names carry the gene (GENCODE), a GTF or tx2gene file
-             -> code bank isoforms/ module: DEI (DESeq2) and DUI (DEXSeq + stageR)
-             with this run's sample table, groups and covariates
+  site.inputs      uploads, each stored and checked by a handler (HANDLERS below) and passed as a parameter
+  site.form        settings the user can change (number, enum, bool, text, run_group)
+  site.from_run    parameters taken from the finished run (organism, groups, covariates, sample table, ...)
+  site.fixed       parameters with a fixed value;  site.inherit: advanced settings copied from the run
+  site.results     summary tiles, headline sentences, figures, top tables, downloads, methods, chat files
+  site.rerun       how the code .zip reruns it (which parameters point at input data)
 
-Each analysis lives in data/jobs/<job>/extras/<module>/<id>/:
-    extra.json         state (queued / running / success / success_with_errors / failed)
-    inputs/            the uploaded files, unpacked
-    run_config.yaml    every parameter passed to the module
-    console.log        the module's output; runs/<module run folder>/ all results
+Field reference: codebank/docs/ADDING_A_MODULE.md. Each analysis lives in
+data/jobs/<job>/extras/<module>/<id>/ (extra.json state, inputs/, run_config.yaml, console.log, runs/).
 The latest analysis of each module is the one shown; earlier ones are kept.
 """
 
@@ -29,22 +28,24 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 import yaml
 
 from . import codebank
 from .config import settings
 
-MODULES = {
-    "splicing": {"entry": "splicing/scripts/run_splicing.R", "title": "Alternative splicing (rMATS)"},
-    "isoforms": {"entry": "isoforms/scripts/run_isoforms.R", "title": "Transcript isoforms (DEI and DUI)"},
-}
-RMATS_TABLE = re.compile(r"^(SE|MXE|A3SS|A5SS|RI)\.MATS\.(JC|JCEC)\.txt$")
 SERVABLE = {".png", ".csv", ".json", ".md", ".txt", ".yaml"}
 FINAL = {"success", "success_with_errors", "failed", "interrupted"}
 STEP_START = re.compile(r"Step (\d+)/(\d+): (\S+) \.\.\.")
 MAX_UNZIPPED = 5 * 1024**3   # refuse archives that unpack to more than 5 GB
+FORM_TYPES = {"number", "integer", "enum", "bool", "text", "run_group"}
+COLUMN_FORMATS = {"num0", "num2", "p", "flag"}
+COLUMN_STYLES = {"small", "sign"}
+TILE_STYLES = {"up", "down"}
+RUN_VALUES = {"organism", "dir", "condition", "reference_level", "test_level", "covariates", "metadata_file", "samples"}
+
+Upload = tuple[str, BinaryIO]
 
 
 class ExtraError(ValueError):
@@ -55,16 +56,61 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def available() -> dict:
-    """Optional modules this code bank has (older code banks have none)."""
+# ---- What the manifest offers ---------------------------------------------------------------------
+def modules() -> dict[str, dict]:
+    """{module: manifest entry} for every module offered on a finished run."""
     mods = codebank.manifest().get("modules") or {}
-    return {k: v["title"] for k, v in MODULES.items() if k in mods}
+    return {k: v for k, v in mods.items() if ((v or {}).get("site") or {}).get("attach_to") == "run"}
 
 
-# ---- Storage -------------------------------------------------------------------------------
-def _module_dir(job_dir: Path, module: str) -> Path:
-    if module not in MODULES:
+def available() -> dict:
+    return {k: v["site"].get("title", k) for k, v in modules().items()}
+
+
+def _spec(module: str) -> dict:
+    m = modules().get(module)
+    if m is None:
         raise KeyError(module)
+    return m
+
+
+def _fill(text: str, values: dict) -> str:
+    """'{test}_vs_{reference}' with the run's / form's values; unknown names stay as they are."""
+    return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: str(values.get(m.group(1), m.group(0))), str(text))
+
+
+def form_spec(module: str, job: dict) -> dict:
+    """What the frontend needs to draw this module's card: description, inputs and form fields with defaults."""
+    m = _spec(module)
+    site, params = m["site"], m.get("parameters") or {}
+    words = _words(job)
+    fields = []
+    for f in site.get("form") or []:
+        p = params.get(f["name"]) or {}
+        field = {**f, "default": f.get("default", p.get("default")), "description": p.get("description")}
+        if f["type"] == "enum":
+            vals = f.get("values") or p.get("values") or []
+            labels = f.get("labels") or {}
+            field["options"] = [{"value": v, "label": labels.get(v, v)} for v in vals]
+        if f["type"] == "run_group":
+            field["options"] = [{"value": "test", "label": f"{words['test']} (test group)"},
+                                {"value": "reference", "label": f"{words['reference']} (reference group)"}]
+        fields.append(field)
+    inputs = [{k: v for k, v in i.items() if k in ("name", "label", "accept", "multiple", "required", "help")}
+              for i in site.get("inputs") or []]
+    return {"module": module, "title": site.get("title", module), "description": _fill(" ".join(str(site.get("description", "")).split()), words),
+            "inputs": inputs, "form": fields}
+
+
+def _words(job: dict) -> dict:
+    s = job["settings"]
+    return {"test": s["test_level"], "reference": s["reference_level"], "condition": s["condition"],
+            "covariates": ", ".join(s.get("covariates") or []) or "nothing"}
+
+
+# ---- Storage ----------------------------------------------------------------------------------------
+def _module_dir(job_dir: Path, module: str) -> Path:
+    _spec(module)
     return job_dir / "extras" / module
 
 
@@ -86,16 +132,25 @@ def latest(job_dir: Path, module: str) -> Path | None:
     return dirs[-1] if dirs else None
 
 
+def finished(job_dir: Path) -> list[tuple[str, Path]]:
+    """[(module, analysis folder)] of the latest successful analysis of each module, in manifest order."""
+    out = []
+    for module in modules():
+        d = latest(job_dir, module) if (job_dir / "extras" / module).exists() else None
+        if d is not None and _load(d).get("status") in ("success", "success_with_errors"):
+            out.append((module, d))
+    return out
+
+
 def run_dir_of(d: Path) -> Path | None:
     runs = sorted(p for p in (d / "runs").iterdir() if p.is_dir()) if (d / "runs").exists() else []
     return runs[-1] if runs else None
 
 
-# ---- Unpacking uploads ----------------------------------------------------------------------
-def _safe_extract(zf: zipfile.ZipFile, dest: Path, keep) -> list[Path]:
+# ---- Upload handlers: store an input, check it, return the parameters it sets ---------------------------
+def _safe_extract(zf: zipfile.ZipFile, dest: Path, keep: Callable[[str], bool]) -> list[Path]:
     """Extract the members `keep(name)` accepts, refusing paths outside dest and zip bombs."""
-    total = sum(i.file_size for i in zf.infolist())
-    if total > MAX_UNZIPPED:
+    if sum(i.file_size for i in zf.infolist()) > MAX_UNZIPPED:
         raise ExtraError("The .zip file unpacks to more than 5 GB.")
     out = []
     root = dest.resolve()
@@ -125,77 +180,101 @@ def _save_upload(src: BinaryIO, dest: Path) -> Path:
     return dest
 
 
-def _rmats_inputs(files: list[tuple[str, BinaryIO]], inputs: Path) -> list[str]:
-    tables = inputs / "rmats"
-    tables.mkdir(parents=True)
-    for name, fh in files:
+def _sets(spec: dict) -> list[str]:
+    s = spec.get("sets") or []
+    return [s] if isinstance(s, str) else list(s)
+
+
+def _h_file(spec: dict, uploads: list[Upload], folder: Path, ctx: dict) -> dict:
+    """One file, stored as is; the parameter gets its path."""
+    name, fh = uploads[0]
+    base = Path(name).name
+    accept = spec.get("accept") or []
+    if accept and not base.lower().endswith(tuple(a.lower() for a in accept)):
+        raise ExtraError(f"'{base}' is not one of the accepted file types ({', '.join(accept)}) for {spec.get('label', spec['name'])}.")
+    return {_sets(spec)[0]: str(_save_upload(fh, folder / base))}
+
+
+def _h_files(spec: dict, uploads: list[Upload], folder: Path, ctx: dict) -> dict:
+    """Several files and/or .zip files; keeps those matching `keep` (default: all); the parameter gets the folder."""
+    keep_re = re.compile(spec.get("keep") or ".*")
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, fh in uploads:
         base = Path(name).name
         if base.lower().endswith(".zip"):
-            tmp = _save_upload(fh, inputs / "upload.zip")
+            tmp = _save_upload(fh, folder.parent / f"{spec['name']}_upload.zip")
             try:
                 with zipfile.ZipFile(tmp) as zf:
-                    for p in _safe_extract(zf, inputs / "unzipped", lambda n: bool(RMATS_TABLE.match(Path(n).name))):
-                        shutil.move(str(p), tables / p.name)
+                    for p in _safe_extract(zf, folder.parent / f"{spec['name']}_unzipped", lambda n: bool(keep_re.search(Path(n).name))):
+                        shutil.move(str(p), folder / p.name)
             except zipfile.BadZipFile as e:
                 raise ExtraError(f"'{base}' is not a readable .zip file.") from e
             finally:
                 tmp.unlink(missing_ok=True)
-                shutil.rmtree(inputs / "unzipped", ignore_errors=True)
-        elif RMATS_TABLE.match(base):
-            _save_upload(fh, tables / base)
-    found = sorted(p.name for p in tables.iterdir())
+                shutil.rmtree(folder.parent / f"{spec['name']}_unzipped", ignore_errors=True)
+        elif keep_re.search(base):
+            _save_upload(fh, folder / base)
+    found = sorted(p.name for p in folder.iterdir())
     if not found:
-        raise ExtraError("No rMATS tables found. Upload the files named like SE.MATS.JCEC.txt (or a .zip of rMATS's output folder).")
-    return found
+        raise ExtraError(spec.get("none_found") or f"No usable files were uploaded for {spec.get('label', spec['name'])}.")
+    if spec.get("require"):
+        req = re.compile(_fill(spec["require"], ctx))
+        if not any(req.search(f) for f in found):
+            raise ExtraError(_fill(spec.get("not_required_found") or "None of the uploaded files fits the chosen settings ({found}).",
+                                   {**ctx, "found": ", ".join(found)}))
+    return {_sets(spec)[0]: str(folder)}
 
 
-def _quant_inputs(quant_zip: tuple[str, BinaryIO], inputs: Path, samples: list[str]) -> list[str]:
-    name, fh = quant_zip
+def _h_sample_folders(spec: dict, uploads: list[Upload], folder: Path, ctx: dict) -> dict:
+    """A .zip with one folder per sample of the run, each holding `file` (e.g. quant.sf)."""
+    name, fh = uploads[0]
+    want = spec.get("file") or "quant.sf"
     if not name.lower().endswith(".zip"):
-        raise ExtraError("Upload the Salmon output as one .zip file with a folder per sample (<sample>/quant.sf).")
-    tmp = _save_upload(fh, inputs / "upload.zip")
-    quant = inputs / "quant"
+        raise ExtraError(f"Upload {spec.get('label', spec['name'])} as one .zip file with a folder per sample (<sample>/{want}).")
+    tmp = _save_upload(fh, folder.parent / f"{spec['name']}_upload.zip")
+    unz = folder.parent / f"{spec['name']}_unzipped"
     try:
         with zipfile.ZipFile(tmp) as zf:
-            files = _safe_extract(zf, inputs / "unzipped", lambda n: Path(n).name == "quant.sf")
+            files = _safe_extract(zf, unz, lambda n: Path(n).name == want)
     except zipfile.BadZipFile as e:
-        raise ExtraError("The Salmon upload is not a readable .zip file.") from e
+        raise ExtraError(f"'{Path(name).name}' is not a readable .zip file.") from e
     finally:
         tmp.unlink(missing_ok=True)
-    found = {}
-    for f in files:
-        found.setdefault(f.parent.name, f)
-    if not found:
-        shutil.rmtree(inputs / "unzipped", ignore_errors=True)
-        raise ExtraError("No quant.sf files in the .zip. Zip the Salmon output folders (one folder per sample, named like the samples).")
-    missing = [s for s in samples if s not in found]
-    if missing:
-        shutil.rmtree(inputs / "unzipped", ignore_errors=True)
-        raise ExtraError(f"No quant.sf for sample(s) {', '.join(missing)}. The folders in the .zip are named "
-                         f"{', '.join(sorted(found))}; they must match the sample names of this analysis.")
-    for s in samples:
-        (quant / s).mkdir(parents=True, exist_ok=True)
-        shutil.move(str(found[s]), quant / s / "quant.sf")
-    shutil.rmtree(inputs / "unzipped", ignore_errors=True)
-    return samples
+    try:
+        found = {}
+        for f in files:
+            found.setdefault(f.parent.name, f)
+        if not found:
+            raise ExtraError(f"No {want} files in the .zip. Zip the output folders (one folder per sample, named like the samples).")
+        missing = [s for s in ctx["samples"] if s not in found]
+        if missing:
+            raise ExtraError(f"No {want} for sample(s) {', '.join(missing)}. The folders in the .zip are named "
+                             f"{', '.join(sorted(found))}; they must match the sample names of this analysis.")
+        for s in ctx["samples"]:
+            (folder / s).mkdir(parents=True, exist_ok=True)
+            shutil.move(str(found[s]), folder / s / want)
+    finally:
+        shutil.rmtree(unz, ignore_errors=True)
+    return {_sets(spec)[0]: str(folder)}
 
 
-def _annotation(annotation: tuple[str, BinaryIO] | None, inputs: Path) -> dict:
-    """Annotation settings for the isoform module: an uploaded GTF / tx2gene, or GENCODE transcript names."""
-    if annotation is not None:
-        name = Path(annotation[0]).name
-        low = name.lower()
+def _h_annotation(spec: dict, uploads: list[Upload], folder: Path, ctx: dict) -> dict:
+    """Transcript-to-gene annotation: an uploaded GTF or tx2gene table, or (nothing uploaded) the gene taken from
+    GENCODE-style transcript names in the quantification files. Sets gtf_file or tx2gene_file."""
+    folder.mkdir(parents=True, exist_ok=True)
+    if uploads:
+        name, fh = uploads[0]
+        low = Path(name).name.lower()
         if low.endswith((".gtf", ".gtf.gz")):
-            p = _save_upload(annotation[1], inputs / ("annotation.gtf.gz" if low.endswith(".gz") else "annotation.gtf"))
-            return {"gtf_file": str(p)}
+            return {"gtf_file": str(_save_upload(fh, folder / ("annotation.gtf.gz" if low.endswith(".gz") else "annotation.gtf")))}
         if low.endswith((".csv", ".tsv", ".txt")):
-            p = _save_upload(annotation[1], inputs / ("tx2gene" + Path(low).suffix))
-            return {"tx2gene_file": str(p)}
+            return {"tx2gene_file": str(_save_upload(fh, folder / ("tx2gene" + Path(low).suffix)))}
         raise ExtraError("The annotation must be a GTF (.gtf or .gtf.gz) or a table with transcript_id and gene_id (.csv/.tsv).")
-    # GENCODE transcript FASTA names: ENST...|ENSG...|OTTHUMG|OTTHUMT|tx name|gene name|length|biotype|
-    first = next(iter(sorted((inputs / "quant").glob("*/quant.sf"))))
+    quant = next(iter(sorted(ctx["inputs"].rglob("quant.sf"))), None)
+    if quant is None:
+        raise ExtraError("Upload an annotation (GTF or tx2gene table).")
     rows = []
-    with open(first) as f:
+    with open(quant) as f:
         next(f)
         for line in f:
             parts = line.split("\t", 1)[0].split("|")
@@ -203,7 +282,7 @@ def _annotation(annotation: tuple[str, BinaryIO] | None, inputs: Path) -> dict:
                 raise ExtraError("The transcript names do not include their gene. Upload the GTF the Salmon index was "
                                  "built from (or a table with transcript_id and gene_id).")
             rows.append((parts[0], parts[1], parts[5]))
-    p = inputs / "tx2gene_from_names.csv"
+    p = folder / "tx2gene_from_names.csv"
     with open(p, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["transcript_id", "gene_id", "gene_name"])
@@ -211,11 +290,137 @@ def _annotation(annotation: tuple[str, BinaryIO] | None, inputs: Path) -> dict:
     return {"tx2gene_file": str(p)}
 
 
-# ---- Starting an analysis ----------------------------------------------------------------------
+# name -> (handler, runs even when nothing was uploaded)
+HANDLERS: dict[str, tuple[Callable, bool]] = {
+    "file": (_h_file, False),
+    "files": (_h_files, False),
+    "sample_folders": (_h_sample_folders, False),
+    "annotation": (_h_annotation, True),
+}
+
+
+# ---- Settings from the form and the run -------------------------------------------------------------
+def _form_values(module: str, job: dict, raw: dict[str, str]) -> tuple[dict, dict, list[str]]:
+    """(module parameters, settings as shown to the user, notes) from the submitted form."""
+    m = _spec(module)
+    params = m.get("parameters") or {}
+    s = job["settings"]
+    words = _words(job)
+    out, shown, notes = {}, {}, []
+    for f in m["site"].get("form") or []:
+        name, typ = f["name"], f["type"]
+        p = params.get(name) or {}
+        default = f.get("default", p.get("default"))
+        v = raw.get(name)
+        if v is None or v == "":
+            v = default
+        label = f.get("label", name)
+        if typ in ("number", "integer"):
+            try:
+                v = float(v) if typ == "number" else int(float(v))
+            except (TypeError, ValueError):
+                raise ExtraError(f"{label}: a number is needed.")
+            lo, hi = f.get("min"), f.get("max")
+            if (lo is not None and v < lo) or (hi is not None and v > hi):
+                raise ExtraError(f"{label} must be between {lo if lo is not None else '-inf'} and {hi if hi is not None else 'inf'}.")
+        elif typ == "enum":
+            allowed = f.get("values") or p.get("values") or []
+            if allowed and v not in allowed:
+                raise ExtraError(f"{label} must be one of {', '.join(map(str, allowed))}.")
+        elif typ == "bool":
+            v = v if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes", "on")
+        elif typ == "run_group":
+            if v not in ("test", "reference"):
+                raise ExtraError(f"{label} must be 'test' or 'reference'.")
+            first, second = (s["test_level"], s["reference_level"]) if v == "test" else (s["reference_level"], s["test_level"])
+            out[name] = first
+            if f.get("pair"):
+                out[f["pair"]] = second
+            shown[name] = v
+            note = (f.get("notes") or {}).get(v)
+            if note:
+                notes.append(_fill(note, words))
+            continue
+        out[name] = v
+        shown[name] = v
+    return out, shown, notes
+
+
+def _from_run(module: str, job: dict, run_dir: Path, inputs: Path) -> dict:
+    m = _spec(module)
+    s = job["settings"]
+    resolved = _resolved(run_dir)
+    words = _words(job)
+    meta = run_dir / "01_validate_inputs" / "metadata_validated.csv"
+    out = {}
+    for key, src in (m["site"].get("from_run") or {}).items():
+        if isinstance(src, str) and src.startswith("run."):
+            what = src[4:]
+            if what == "organism":
+                out[key] = resolved.get("organism") or s.get("organism") or "auto"
+            elif what == "dir":
+                out[key] = str(run_dir)
+            elif what in ("condition", "reference_level", "test_level"):
+                out[key] = s[what]
+            elif what == "covariates":
+                out[key] = list(s.get("covariates") or [])
+            elif what == "metadata_file":
+                shutil.copy(meta, inputs / "samples.csv")
+                out[key] = str(inputs / "samples.csv")
+            elif what == "samples":
+                out[key] = _samples(run_dir)
+            else:
+                raise ExtraError(f"The code bank asks for '{src}', which this site does not know (manifest site.from_run).")
+        else:
+            out[key] = _fill(src, words) if isinstance(src, str) else src
+    return out
+
+
+def _samples(run_dir: Path) -> list[str]:
+    meta = run_dir / "01_validate_inputs" / "metadata_validated.csv"
+    with open(meta, newline="") as f:
+        return [r[0] for i, r in enumerate(csv.reader(f)) if i > 0 and r]
+
+
+# ---- Starting an analysis ----------------------------------------------------------------------------
 class ExtrasManager:
     def __init__(self) -> None:
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="extras")
         self._lock = threading.Lock()
+
+    def start(self, module: str, job: dict, job_dir: Path, run_dir: Path, files: dict[str, list[Upload]],
+              form: dict[str, str]) -> dict:
+        m = _spec(module)
+        site = m["site"]
+        values, shown, notes = _form_values(module, job, form)
+        for spec in site.get("inputs") or []:
+            if spec.get("required") and not files.get(spec["name"]):
+                raise ExtraError(f"{spec.get('label', spec['name'])}: no file was uploaded.")
+            if spec["handler"] not in HANDLERS:
+                raise ExtraError(f"The code bank asks for an upload handler '{spec['handler']}' that this site does not have yet.")
+        d, rec = self._new(job_dir, module)
+        inputs = d / "inputs"
+        try:
+            cfg = {**(site.get("fixed") or {}), **_from_run(module, job, run_dir, inputs)}
+            adv = job["settings"].get("advanced") or {}
+            cfg.update({k: adv[k] for k in site.get("inherit") or [] if k in adv})
+            cfg.update(values)
+            ctx = {**_words(job), **values, "samples": _samples(run_dir), "inputs": inputs}
+            used = []
+            for spec in site.get("inputs") or []:
+                ups = files.get(spec["name"]) or []
+                handler, always = HANDLERS[spec["handler"]]
+                if not ups and not always:
+                    continue
+                set_by = handler(spec, ups, inputs / spec["name"], ctx)
+                cfg.update(set_by)
+                used.append({"input": spec["name"], "files": [Path(n).name for n, _ in ups],
+                             "used": {k: Path(v).name for k, v in set_by.items()}})
+        except Exception:
+            shutil.rmtree(d, ignore_errors=True)
+            raise
+        rec.update(settings=shown, inputs=used, note=" ".join(notes) or None)
+        return self._launch(d, rec, cfg)
 
     def _new(self, job_dir: Path, module: str) -> tuple[Path, dict]:
         base = _module_dir(job_dir, module)
@@ -229,75 +434,9 @@ class ExtrasManager:
         return d, {"id": eid, "module": module, "status": "queued", "created": _now(), "started": None, "finished": None,
                    "error": None, "codebank": codebank.version_info()}
 
-    def start_splicing(self, job: dict, job_dir: Path, run_dir: Path, files: list[tuple[str, BinaryIO]], *,
-                       b1_group: str = "test", count_type: str = "JCEC", fdr_cutoff: float = 0.05,
-                       delta_psi_cutoff: float = 0.1, min_reads_per_sample: float = 10) -> dict:
-        s = job["settings"]
-        test, ref = s["test_level"], s["reference_level"]
-        if b1_group not in ("test", "reference"):
-            raise ExtraError("b1_group must be 'test' or 'reference'.")
-        if count_type not in ("JCEC", "JC"):
-            raise ExtraError("count_type must be JCEC or JC.")
-        if not (0 < fdr_cutoff <= 1) or not (0 <= delta_psi_cutoff < 1) or min_reads_per_sample < 0:
-            raise ExtraError("Cutoffs out of range (FDR 0-1, dPSI 0-1, reads >= 0).")
-        d, rec = self._new(job_dir, "splicing")
-        try:
-            tables = _rmats_inputs(files, d / "inputs")
-            if not any(t.endswith(f".MATS.{count_type}.txt") for t in tables):
-                raise ExtraError(f"No {count_type} tables among the uploaded files ({', '.join(tables)}).")
-        except Exception:
-            shutil.rmtree(d, ignore_errors=True)
-            raise
-        resolved = _resolved(run_dir)
-        g1, g2 = (test, ref) if b1_group == "test" else (ref, test)
-        cfg = {"run_name": f"{test}_vs_{ref}_splicing", "rmats_dir": str(d / "inputs" / "rmats"), "count_type": count_type,
-               "group_1_name": g1, "group_2_name": g2, "organism": resolved.get("organism") or "auto",
-               "fdr_cutoff": fdr_cutoff, "delta_psi_cutoff": delta_psi_cutoff, "min_reads_per_sample": min_reads_per_sample,
-               "de_run": str(run_dir)}
-        adv = s.get("advanced") or {}
-        for k in ("gene_set_collections", "run_enrichment", "plot_palette", "up_colour", "down_colour", "group_colours"):
-            if k in adv:
-                cfg[k] = adv[k]
-        rec.update(settings={"b1_group": b1_group, "count_type": count_type, "fdr_cutoff": fdr_cutoff,
-                             "delta_psi_cutoff": delta_psi_cutoff, "min_reads_per_sample": min_reads_per_sample},
-                   inputs=tables, note=None if b1_group == "test" else
-                   f"rMATS sample 1 (--b1) was {ref}: dPSI = PSI({ref}) - PSI({test}); positive = more inclusion in {ref}.")
-        return self._launch(d, rec, cfg)
-
-    def start_isoforms(self, job: dict, job_dir: Path, run_dir: Path, quant_zip: tuple[str, BinaryIO],
-                       annotation: tuple[str, BinaryIO] | None = None, *, min_delta_usage: float = 0.1,
-                       dui_alpha: float = 0.05) -> dict:
-        if not (0 < dui_alpha <= 1) or not (0 <= min_delta_usage < 1):
-            raise ExtraError("Cutoffs out of range (FDR 0-1, delta usage 0-1).")
-        s = job["settings"]
-        meta = run_dir / "01_validate_inputs" / "metadata_validated.csv"
-        with open(meta, newline="") as f:
-            samples = [r[0] for i, r in enumerate(csv.reader(f)) if i > 0 and r]
-        d, rec = self._new(job_dir, "isoforms")
-        try:
-            _quant_inputs(quant_zip, d / "inputs", samples)
-            ann = _annotation(annotation, d / "inputs")
-        except Exception:
-            shutil.rmtree(d, ignore_errors=True)
-            raise
-        shutil.copy(meta, d / "inputs" / "samples.csv")
-        adv = s.get("advanced") or {}
-        cfg = {"run_name": f"{s['test_level']}_vs_{s['reference_level']}_isoforms", "quant_dir": str(d / "inputs" / "quant"),
-               "quant_type": "salmon", "metadata_file": str(d / "inputs" / "samples.csv"), **ann,
-               "condition": s["condition"], "reference_level": s["reference_level"], "test_level": s["test_level"],
-               "covariates": s.get("covariates") or [], "organism": _resolved(run_dir).get("organism") or "auto",
-               "dui_alpha": dui_alpha, "min_delta_usage": min_delta_usage, "threads": 2}
-        for k in ("padj_cutoff", "log2fc_cutoff", "lfc_shrinkage", "min_count", "plot_palette", "up_colour", "down_colour"):
-            if k in adv:
-                cfg[k] = adv[k]
-        rec.update(settings={"min_delta_usage": min_delta_usage, "dui_alpha": dui_alpha,
-                             "annotation": Path(next(iter(ann.values()))).name},
-                   inputs=samples, note=None)
-        return self._launch(d, rec, cfg)
-
     def _launch(self, d: Path, rec: dict, cfg: dict) -> dict:
         (d / "run_config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
-        cmd = [settings.rscript, str(codebank.path(MODULES[rec["module"]]["entry"])), "--config", str(d / "run_config.yaml"),
+        cmd = [settings.rscript, str(codebank.path(_spec(rec["module"])["entry_point"])), "--config", str(d / "run_config.yaml"),
                "--runs_dir", str(d / "runs")]
         rec["command"] = cmd
         _save(d, rec)
@@ -362,8 +501,8 @@ def _refresh_report(d: Path) -> None:
         pass
 
 
-# ---- Reading results -------------------------------------------------------------------------------
-def _json(p: Path):
+# ---- Reading results ----------------------------------------------------------------------------------
+def _json(p: Path | None):
     return json.loads(p.read_text()) if p and p.exists() else None
 
 
@@ -372,82 +511,90 @@ def _resolved(run_dir: Path) -> dict:
     return (yaml.safe_load(p.read_text()) or {}) if p.exists() else {}
 
 
-def _csv_head(p: Path, n: int = 50) -> list[dict]:
+def _csv_rows(p: Path, n: int, where: dict | None = None) -> list[dict]:
     if not p.exists():
         return []
     opener = gzip.open if p.suffix == ".gz" else open
+    out = []
     with opener(p, "rt", newline="") as f:
-        out = []
-        for i, r in enumerate(csv.DictReader(f)):
-            if i >= n:
-                break
+        for r in csv.DictReader(f):
+            if where and any(str(r.get(k, "")).upper() != str(v).upper() for k, v in where.items()):
+                continue
             out.append(r)
-        return out
+            if len(out) >= n:
+                break
+    return out
 
 
-FIGURES = {
-    "splicing": [
-        ("S02_splicing_results/event_counts.png", "Significant events by type", "Events per type that pass the significance rule, split by direction."),
-        ("S02_splicing_results/dpsi_volcano.png", "Change in inclusion", "Each dot is an event: change in percent spliced in (x) against the evidence (y)."),
-        ("S02_splicing_results/dpsi_distribution.png", "dPSI by event type", "Violins: all events with enough reads; points: significant events."),
-        ("S02_splicing_results/splicing_vs_expression.png", "Splicing vs expression", "Genes whose splicing changes, whose expression changes (this run), or both."),
-        ("S02_splicing_results/psi_scatter.png", "PSI in each group", "Mean inclusion per event in the two groups."),
-        ("S02_splicing_results/top_events_heatmap.png", "Top events per sample", "Inclusion (PSI) of the strongest significant events in every sample."),
-    ],
-    "isoforms": [
-        ("I03_differential_isoform_usage/dui_top_genes_usage.png", "Isoform usage, top genes", "Share of each gene made up by each transcript; bars are group means, points samples."),
-        ("I03_differential_isoform_usage/dui_volcano.png", "Differential isoform usage", "Change in a transcript's share of its gene against the evidence."),
-        ("I02_differential_isoform_expression/dei_volcano.png", "Differential isoform expression", "Each dot is a transcript: fold change against the evidence."),
-        ("I02_differential_isoform_expression/dei_ma_plot.png", "MA plot, transcripts", "Fold change against mean expression."),
-    ],
-}
+def lookup(sources: dict, path: str):
+    """'s.n_significant' -> the value in source s (None if missing)."""
+    cur = sources
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def fmt_value(v) -> str:
+    if v is None:
+        return "–"
+    if isinstance(v, bool):
+        return "yes" if v else "no"
+    if isinstance(v, float):
+        return f"{v:,.0f}" if v.is_integer() else f"{v:.3g}"
+    if isinstance(v, int):
+        return f"{v:,}"
+    if isinstance(v, dict):
+        return "; ".join(f"{k}: {fmt_value(x)}" for k, x in v.items())
+    if isinstance(v, list):
+        return ", ".join(fmt_value(x) for x in v)
+    return str(v).rstrip(".")
+
+
+def headline(results: dict, sources: dict) -> list[str]:
+    """The headline sentences (markdown with **bold**), with conditions applied and values filled in."""
+    out = []
+    for item in results.get("headline") or []:
+        if isinstance(item, str):
+            item = {"text": item}
+        if "when" in item and not lookup(sources, item["when"]):
+            continue
+        if "unless" in item and lookup(sources, item["unless"]):
+            continue
+        out.append(re.sub(r"\{([A-Za-z_][\w.]*)\}", lambda m: fmt_value(lookup(sources, m.group(1))), item["text"]))
+    return out
 
 
 def overview(d: Path) -> dict:
     rec = _load(d)
-    rd = run_dir_of(d)
     module = rec["module"]
+    m = _spec(module)
+    res = m["site"].get("results") or {}
     out = {k: rec.get(k) for k in ("id", "module", "status", "created", "started", "finished", "error", "settings", "inputs", "note")}
-    out["title"] = MODULES[module]["title"]
+    out["title"] = m["site"].get("title", module)
     out["steps"] = _progress(d, module, rec["status"])
+    rd = run_dir_of(d)
     if not rd:
         return out
+    sources = {k: _json(rd / v) or {} for k, v in (res.get("sources") or {}).items()}
     out["run_id"] = rd.name
-    out["figures"] = [{"path": p, "title": t, "caption": c} for p, t, c in FIGURES[module] if (rd / p).exists()]
-    if module == "splicing":
-        genes = ((_json(rd / "S02_splicing_results" / "splicing_summary.json") or {}).get("splicing_vs_expression") or {}).get("genes") or {}
-        if not any(k in genes for k in ("splicing and expression", "splicing only", "expression only", "neither")):
-            # no gene matched the run's DE results (e.g. other gene IDs): the comparison figure is empty
-            out["figures"] = [f for f in out["figures"] if "splicing_vs_expression" not in f["path"]]
-    out["methods_md"] = (rd / f"{'S04_splicing_report' if module == 'splicing' else 'I04_isoform_report'}" / "methods.md").read_text() \
-        if (rd / f"{'S04_splicing_report' if module == 'splicing' else 'I04_isoform_report'}" / "methods.md").exists() else None
+    out["headline"] = headline(res, sources)
+    out["tiles"] = [{"label": t["label"], "value": lookup(sources, t["value"]), "style": t.get("style")} for t in res.get("tiles") or []]
+    out["figures"] = [f for f in res.get("figures") or [] if (rd / f["path"]).exists()]
+    out["top_tables"] = [{"title": t.get("title", ""), "columns": t.get("columns") or [], "empty": t.get("empty", "None."),
+                          "rows": _csv_rows(rd / t["path"], int(t.get("rows", 50)), t.get("filter"))}
+                         for t in res.get("top_tables") or []]
+    out["tables"] = [p for p in res.get("tables") or [] if (rd / p).exists()]
+    meth = rd / res["methods"] if res.get("methods") else None
+    out["methods_md"] = meth.read_text() if meth and meth.exists() else None
     out["validation"] = _json(next(iter(sorted(rd.glob("*/validation_report.json"))), None))
-    if module == "splicing":
-        s = _json(rd / "S02_splicing_results" / "splicing_summary.json") or {}
-        out["summary"] = {k: s.get(k) for k in ("comparison", "sign_convention", "significance_rule", "n_events_tested",
-                                                 "n_events_passing_coverage", "n_significant", "n_up", "n_down",
-                                                 "n_genes_significant", "by_event_type", "splicing_vs_expression")}
-        out["top"] = _csv_head(rd / "S02_splicing_results" / "splicing_events_significant.csv", 50)
-        out["enrichment"] = _json(rd / "S03_splicing_enrichment" / "enrichment_summary.json")
-        out["tables"] = [p for p in ("S02_splicing_results/splicing_events_all.csv", "S02_splicing_results/splicing_events_significant.csv",
-                                     "S02_splicing_results/splicing_vs_expression.csv") if (rd / p).exists()]
-    else:
-        dei = _json(rd / "I02_differential_isoform_expression" / "dei_summary.json") or {}
-        dui = _json(rd / "I03_differential_isoform_usage" / "dui_summary.json") or {}
-        out["summary"] = {"dei": {k: dei.get(k) for k in ("comparison", "significance_rule", "n_transcripts_tested", "n_significant",
-                                                           "n_up", "n_down", "n_genes_with_significant_transcripts")},
-                          "dui": {k: dui.get(k) for k in ("status", "reason", "significance_rule", "n_genes_tested", "n_genes_significant",
-                                                           "n_isoform_switches", "n_transcripts_significant", "sign_convention")}}
-        out["top"] = [r for r in _csv_head(rd / "I03_differential_isoform_usage" / "dui_genes.csv", 200) if r.get("significant") in ("TRUE", "True", "true")][:50]
-        out["top_dei"] = _csv_head(rd / "I02_differential_isoform_expression" / "dei_results_significant.csv", 50)
-        out["tables"] = [p for p in ("I02_differential_isoform_expression/dei_results_all.csv",
-                                     "I03_differential_isoform_usage/dui_transcripts_all.csv",
-                                     "I03_differential_isoform_usage/dui_genes.csv") if (rd / p).exists()]
+    out["summary"] = sources
     return out
 
 
 def _progress(d: Path, module: str, status: str) -> list[dict]:
-    spec = (codebank.manifest().get("modules") or {}).get(module, {}).get("steps") or []
+    spec = _spec(module).get("steps") or []
     steps = {s["name"]: {"name": s["name"], "description": s.get("description", ""), "status": "pending"} for s in spec}
     log = d / "console.log"
     current = None
@@ -470,7 +617,7 @@ def _progress(d: Path, module: str, status: str) -> list[dict]:
 
 def all_for(job_dir: Path) -> dict:
     out = {}
-    for m in MODULES:
+    for m in modules():
         d = latest(job_dir, m)
         out[m] = overview(d) if d else None
     return out
@@ -496,5 +643,76 @@ def bundle(d: Path) -> Path:
         Path(tmp).replace(target)
     return target
 
+
+# ---- Checking a code bank's manifest against this site (used by tests and the release agent) -------------
+def check_manifest(manifest: dict | None = None) -> list[str]:
+    """Problems that stop the site from offering a module exactly as the manifest describes it (empty = fine)."""
+    manifest = manifest if manifest is not None else codebank.manifest()
+    problems = []
+    for name, m in (manifest.get("modules") or {}).items():
+        site = (m or {}).get("site")
+        if not site:
+            problems.append(f"{name}: no `site` block (say attach_to: run, page or none)")
+            continue
+        where = site.get("attach_to")
+        if where == "none":
+            continue
+        if where == "page":
+            if site.get("page") not in KNOWN_PAGES:
+                problems.append(f"{name}: page '{site.get('page')}' does not exist on this site (known: {', '.join(sorted(KNOWN_PAGES))})")
+            continue
+        if where != "run":
+            problems.append(f"{name}: attach_to must be run, page or none (is '{where}')")
+            continue
+        params = m.get("parameters") or {}
+        if not m.get("entry_point"):
+            problems.append(f"{name}: no entry_point")
+        for i in site.get("inputs") or []:
+            if i.get("handler") not in HANDLERS:
+                problems.append(f"{name}: input '{i.get('name')}' uses handler '{i.get('handler')}', which this site does not have "
+                                f"(known: {', '.join(HANDLERS)})")
+            for p in _sets(i):
+                if p not in params:
+                    problems.append(f"{name}: input '{i.get('name')}' sets '{p}', which is not a parameter of the module")
+        for f in site.get("form") or []:
+            if f.get("type") not in FORM_TYPES:
+                problems.append(f"{name}: form field '{f.get('name')}' has type '{f.get('type')}' (known: {', '.join(sorted(FORM_TYPES))})")
+            for p in [f.get("name"), f.get("pair")]:
+                if p and p not in params:
+                    problems.append(f"{name}: form field '{p}' is not a parameter of the module")
+        for k, src in (site.get("from_run") or {}).items():
+            if k not in params:
+                problems.append(f"{name}: from_run sets '{k}', which is not a parameter of the module")
+            if isinstance(src, str) and src.startswith("run.") and src[4:] not in RUN_VALUES:
+                problems.append(f"{name}: from_run uses '{src}' (known: {', '.join('run.' + v for v in sorted(RUN_VALUES))})")
+        for k in list((site.get("fixed") or {})) + list(site.get("inherit") or []):
+            if k not in params:
+                problems.append(f"{name}: '{k}' (fixed / inherit) is not a parameter of the module")
+        res = site.get("results") or {}
+        srcs = set((res.get("sources") or {}).keys())
+        for t in res.get("tiles") or []:
+            if str(t.get("value", "")).split(".")[0] not in srcs:
+                problems.append(f"{name}: tile '{t.get('label')}' reads '{t.get('value')}' but results.sources has no '{str(t.get('value', '')).split('.')[0]}'")
+        for f in res.get("figures") or []:
+            if not {"path", "title"} <= set(f):
+                problems.append(f"{name}: a figure needs path and title ({f})")
+        for t in res.get("top_tables") or []:
+            if not t.get("path"):
+                problems.append(f"{name}: top table '{t.get('title')}' has no path")
+            for c in t.get("columns") or []:
+                if c.get("format") is not None and c["format"] not in COLUMN_FORMATS:
+                    problems.append(f"{name}: column '{c.get('label')}' has format {c['format']!r} (known: {', '.join(sorted(COLUMN_FORMATS))}; "
+                                    "write words like yes/no/on in quotes, YAML reads them as true/false)")
+                if c.get("style") is not None and c["style"] not in COLUMN_STYLES:
+                    problems.append(f"{name}: column '{c.get('label')}' has style {c['style']!r} (known: {', '.join(sorted(COLUMN_STYLES))})")
+                if not (c.get("value") or c.get("template")):
+                    problems.append(f"{name}: column '{c.get('label')}' needs value or template")
+        for t in res.get("tiles") or []:
+            if t.get("style") is not None and t["style"] not in TILE_STYLES:
+                problems.append(f"{name}: tile '{t.get('label')}' has style {t['style']!r} (known: {', '.join(sorted(TILE_STYLES))})")
+    return problems
+
+
+KNOWN_PAGES = {"compare"}
 
 extras = ExtrasManager()

@@ -193,4 +193,3 @@ def test_failed_check_is_explained(client, tmp_path):
     spec = {"studies": [{"kind": "run", "job_id": j1["id"]}, {"kind": "table", "file": 0, "label": "bad"}]}
     ov = wait(client, client.post("/api/comparisons", data={"spec": json.dumps(spec)}, files=[("files", ("bad.csv", bad, "text/csv"))]).json()["id"])
     assert ov["status"] == "failed" and "log2FoldChange" in ov["error"]
-  

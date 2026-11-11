@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 
-from . import code_bundle, codebank, comparisons, extras, geo, report, results, secrets_store, uploads
+from . import code_bundle, codebank, comparisons, extras, fastq, geo, report, results, secrets_store, uploads
 from .config import settings
 from .jobs import jobs
 from .chat import model as chat_model
@@ -32,6 +32,8 @@ async def lifespan(app: FastAPI):
     extras.extras.recover(settings.jobs_dir)
     comparisons.base_dir().mkdir(parents=True, exist_ok=True)
     comparisons.comparisons.recover()
+    fastq.jobs_root().mkdir(parents=True, exist_ok=True)
+    fastq.fastq_jobs.recover()
     yield
 
 
@@ -490,11 +492,60 @@ def chat_file(job_id: str, conv_id: str, rel: str, download: bool = False):
 # ---- Optional analyses: splicing and isoforms ---------------------------------------------------
 @app.get("/api/runs/{job_id}/extras")
 def list_extras(job_id: str) -> dict:
-    """The optional analyses the code bank offers on this run (from its manifest), with their forms and latest results."""
+    """The optional analyses the code bank offers on this run (from its manifest), with their forms and latest results.
+    from_fastq: for a dataset made from FASTQ files on the server, which analyses can use those results directly."""
     _run_dir_or_404(job_id)
     job = jobs.load(job_id)
+    fq = fastq.source_for_run(job)
     return {"available": extras.available(), "forms": {m: extras.form_spec(m, job) for m in extras.modules()},
-            "analyses": extras.all_for(jobs.job_dir(job_id))}
+            "analyses": extras.all_for(jobs.job_dir(job_id)),
+            "from_fastq": {"job_id": fq["job_id"], "folder": fq.get("folder"),
+                           "modules": fastq.extras_available(fq["job_id"], job)} if fq else None}
+
+
+def _start_extra_from_fastq(job_id: str, module: str) -> dict:
+    run_dir = _run_dir_or_404(job_id)
+    job = jobs.load(job_id)
+    fq = fastq.source_for_run(job)
+    if not fq:
+        raise HTTPException(status_code=422, detail="This analysis was not made from FASTQ files on the server.")
+    files = fastq.extras_inputs(fq["job_id"], module, job)
+    try:
+        return extras.extras.start(module, job, jobs.job_dir(job_id), run_dir, files, {})
+    finally:
+        for lst in files.values():
+            for _, fh in lst:
+                fh.close()
+
+
+@app.post("/api/runs/{job_id}/extras/{module}/from-fastq")
+def start_extra_from_fastq(job_id: str, module: str) -> dict:
+    """Start an optional analysis with the rMATS tables / Salmon results of the FASTQ job (default settings)."""
+    if module not in extras.modules():
+        raise HTTPException(status_code=404, detail=f"This code bank offers no '{module}' analysis on a run.")
+    try:
+        return _start_extra_from_fastq(job_id, module)
+    except (fastq.FastqError, extras.ExtraError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+def _auto_fastq_extras(job: dict) -> None:
+    """A finished analysis of FASTQ-made counts: start splicing and isoforms with the job's results."""
+    if job.get("status") not in ("success", "success_with_errors") or not job.get("run_dir"):
+        return
+    fq = fastq.source_for_run(job)
+    if not fq:
+        return
+    done = extras.all_for(jobs.job_dir(job["id"])) or {}
+    for module, info in fastq.extras_available(fq["job_id"], job).items():
+        if info["available"] and module in extras.modules() and not done.get(module):
+            try:
+                _start_extra_from_fastq(job["id"], module)
+            except Exception:  # noqa: BLE001 - the user can start it from the tab
+                pass
+
+
+jobs.on_finished.append(_auto_fastq_extras)
 
 
 @app.post("/api/runs/{job_id}/extras/{module}")
@@ -572,6 +623,98 @@ def run_bundle(job_id: str):
 
 
 # ---- Cross-study comparison (results level, never merged counts) -------------------------------
+# ---- Start from FASTQ files (on the server) ----------------------------------------------------------
+class FastqSpec(BaseModel):
+    folder: str
+    groups: dict[str, str] = Field(default_factory=dict)
+    batch: dict[str, str] = Field(default_factory=dict)
+    control: str | None = None
+    species: str | None = None
+    steps: list[str] | None = None
+    threads: int | None = None
+    description: str = ""
+    setup_origin: str | None = None
+
+
+class FastqAssist(BaseModel):
+    folder: str
+    description: str = ""
+
+
+def _fastq_call(fn, *a):
+    try:
+        return fn(*a)
+    except fastq.FastqError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except KeyError:
+        _not_found("FASTQ job")
+
+
+@app.get("/api/fastq/folders")
+def fastq_folders() -> dict:
+    return {**fastq.list_folders(), "references": fastq.references(), "steps": [{"id": i, "label": l} for i, l in fastq.STEPS],
+            "required_steps": sorted(fastq.REQUIRED_STEPS), "max_threads": fastq.max_threads(), "jobs": fastq.fastq_jobs.all()[:20]}
+
+
+@app.get("/api/fastq/folders/{folder}")
+def fastq_folder(folder: str) -> dict:
+    return _fastq_call(fastq.pair_files, folder)
+
+
+@app.post("/api/fastq/assist")
+def fastq_assist(body: FastqAssist) -> dict:
+    return _fastq_call(fastq.assist, body.folder, body.description)
+
+
+@app.post("/api/fastq/references/{species}")
+def fastq_reference(species: str) -> dict:
+    return _fastq_call(fastq.download_reference, species)
+
+
+@app.post("/api/fastq/check")
+def fastq_check(body: FastqSpec) -> dict:
+    return _fastq_call(fastq.fastq_jobs.check, body.model_dump())
+
+
+@app.post("/api/fastq/jobs")
+def fastq_start(body: FastqSpec) -> dict:
+    return _fastq_call(fastq.fastq_jobs.start, body.model_dump())
+
+
+@app.get("/api/fastq/jobs/{fid}")
+def fastq_job(fid: str) -> dict:
+    return _fastq_call(fastq.fastq_jobs.overview, fid)
+
+
+@app.post("/api/fastq/jobs/{fid}/cancel")
+def fastq_cancel(fid: str) -> dict:
+    return _fastq_call(fastq.fastq_jobs.cancel, fid)
+
+
+@app.post("/api/fastq/jobs/{fid}/dataset")
+def fastq_dataset(fid: str) -> dict:
+    """The counts table and sample table become a dataset; the page then opens its setup."""
+    rec = _fastq_call(fastq.fastq_jobs.to_dataset, fid)
+    return uploads.describe(rec["id"])
+
+
+@app.get("/api/fastq/jobs/{fid}/files/{rel:path}")
+def fastq_file(fid: str, rel: str, download: bool = False):
+    p = _fastq_call(fastq.fastq_jobs.file, fid, rel)
+    if p.is_dir():
+        buf = __import__("io").BytesIO()
+        import zipfile
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in sorted(p.rglob("*")):
+                if f.is_file() and f.stat().st_size < 200_000_000:
+                    z.write(f, f.relative_to(p.parent).as_posix())
+        buf.seek(0)
+        return StreamingResponse(buf, media_type="application/zip",
+                                 headers={"Content-Disposition": f'attachment; filename="{p.name}.zip"'})
+    return FileResponse(p, filename=p.name if download else None,
+                        content_disposition_type="attachment" if download else "inline")
+
+
 @app.get("/api/comparisons")
 def list_comparisons() -> dict:
     runs = [{"id": j["id"], "label": comparisons.default_label(j), "dataset": j.get("dataset"),

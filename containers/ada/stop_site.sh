@@ -14,7 +14,7 @@ case "${ID:-}" in
     else
       echo "The site (process $P) is not running."
     fi
-    command -v apptainer >/dev/null && apptainer instance stop "ollama_$P" >/dev/null 2>&1 || true ;;
+    for A in apptainer singularity; do command -v $A >/dev/null && $A instance stop "ollama_$P" >/dev/null 2>&1; done; true ;;
   "") echo "Nothing recorded." ;;
   *)  if squeue -h -j "$ID" 2>/dev/null | grep -q .; then scancel "$ID" && echo "Stopped site job $ID."; else echo "Site job $ID is not running."; fi ;;
 esac

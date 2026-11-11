@@ -132,7 +132,8 @@ exit
 # -----------------------------------------------------------------------------
 # Needs internet: run on the login node (or the node your admins point you to).
 cd $COPILOT_DIR/bulk-rnaseq-copilot
-containers/ada/pull_model.sh            # qwen3:8b (site assistants, ~5 GB) + qwen3-coder:30b (release agent, ~19 GB)
+containers/ada/pull_model.sh            # qwen3:8b (site assistants on Ada's CPUs, ~5 GB) + qwen3-coder:30b (release agent, ~19 GB)
+# (on a GPU with 20 GB or more, e.g. fuji, the site uses qwen3:30b instead: see docs/fuji_setup_commands.sh)
 # A bigger model for the site if a GPU server allows it (better setup suggestions):
 #   containers/ada/pull_model.sh qwen3:14b      and later  OLLAMA_MODEL=qwen3:14b sbatch ...
 #

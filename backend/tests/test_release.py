@@ -61,6 +61,8 @@ def home(tmp_path, monkeypatch):
     if tags:
         sh(h / "codebank", "git", "tag", "-d", *tags)
     sh(h, "git", "clone", "-q", str(SITE), "copilot")
+    # its own branch: SITE may itself be a staging copy on release/<tag> (the release check runs these tests there)
+    sh(h / "copilot", "git", "checkout", "-q", "-B", "site-under-test")
     # the live site = this working tree's code (committed or not), so the test checks what is being developed
     for d in ("backend/app", "backend/tests"):
         shutil.rmtree(h / "copilot" / d)

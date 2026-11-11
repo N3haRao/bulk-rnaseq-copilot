@@ -14,6 +14,7 @@ resume if interrupted (run the same command again); every file is checked agains
 Python 3 standard library + curl only (both on fuji); no SRA tools needed.
 """
 import argparse
+import concurrent.futures
 import csv
 import hashlib
 import io
@@ -169,12 +170,13 @@ def md5(path: Path) -> str:
     return h.hexdigest()
 
 
-def fetch(url: str, dest: Path, want_md5: str) -> None:
+def fetch(url: str, dest: Path, want_md5: str, quiet: bool = False) -> None:
     if dest.exists() and md5(dest) == want_md5:
         return
     part = dest.with_name(dest.name + ".part")
     for i in range(5):
-        rc = subprocess.call(["curl", "-fL", "--retry", "5", "--retry-delay", "10", "-C", "-", "-o", str(part), url])
+        rc = subprocess.call(["curl", "-fL", "--retry", "5", "--retry-delay", "10", "-C", "-", "-o", str(part), url]
+                             + (["-sS"] if quiet else []))
         if rc == 0 and md5(part) == want_md5:
             part.rename(dest)
             return
@@ -182,7 +184,7 @@ def fetch(url: str, dest: Path, want_md5: str) -> None:
             part.unlink(missing_ok=True)
         print(f"   retrying {dest.name} ({i + 1}/5)", flush=True)
         time.sleep(10)
-    sys.exit(f"Could not download {url} correctly. Run the same command again later (finished files are kept).")
+    raise RuntimeError(f"could not download {url} correctly")
 
 
 def main() -> None:
@@ -191,6 +193,7 @@ def main() -> None:
     ap.add_argument("--download", action="store_true", help="download (default: only list)")
     ap.add_argument("--only", default="", help="comma-separated GSM or SRR/ERR accessions to keep")
     ap.add_argument("--folder", default=None, help="folder name under the incoming folder (default: the GSE)")
+    ap.add_argument("--parallel", type=int, default=4, help="files downloaded at the same time (default 4)")
     ap.add_argument("--name-by", choices=["design", "title"], default="design",
                     help="file names from the GEO characteristics (default) or the GEO sample titles")
     ap.add_argument("--incoming", default=None, help="default: $FASTQ_INCOMING_DIR or $COPILOT_HOME/data/incoming")
@@ -232,28 +235,45 @@ def main() -> None:
         sys.exit(f"Only {free / 1e9:.0f} GB free in {out}; {total / 1e9:.0f} GB needed.")
     tmp = incoming / f".download_{out.name}"   # hidden from the site while it fills
     tmp.mkdir(parents=True, exist_ok=True)
-    for k, s in enumerate(samples, 1):
-        for mate in sorted({m for r in s["runs"] for m in r["files"]}):
-            final = out / f"{s['name']}_{mate}.fastq.gz"
-            if final.exists():
-                continue
-            print(f"[{k}/{len(samples)}] {final.name}", flush=True)
-            parts = []
-            for r in s["runs"]:
-                f = r["files"][mate]
-                p = tmp / f"{r['run']}_{mate}.fastq.gz"
-                fetch(f["url"], p, f["md5"])
-                parts.append(p)
-            if len(parts) == 1:
-                parts[0].rename(final)
-            else:                                   # gzip files can simply be joined
-                with open(final.with_name(final.name + ".part"), "wb") as w:
-                    for p in parts:
-                        with open(p, "rb") as r_:
-                            shutil.copyfileobj(r_, w, 1 << 22)
-                final.with_name(final.name + ".part").rename(final)
+    jobs = [(k, s, mate) for k, s in enumerate(samples, 1) for mate in sorted({m for r in s["runs"] for m in r["files"]})
+            if not (out / f"{s['name']}_{mate}.fastq.gz").exists()]
+    quiet = a.parallel > 1
+
+    def one(k: int, s: dict, mate: str) -> str:
+        final = out / f"{s['name']}_{mate}.fastq.gz"
+        print(f"[{k}/{len(samples)}] {final.name}: downloading", flush=True)
+        parts = []
+        for r in s["runs"]:
+            f = r["files"][mate]
+            p = tmp / f"{r['run']}_{mate}.fastq.gz"
+            fetch(f["url"], p, f["md5"], quiet)
+            parts.append(p)
+        if len(parts) == 1:
+            parts[0].rename(final)
+        else:                                   # gzip files can simply be joined
+            with open(final.with_name(final.name + ".part"), "wb") as w:
                 for p in parts:
-                    p.unlink()
+                    with open(p, "rb") as r_:
+                        shutil.copyfileobj(r_, w, 1 << 22)
+            final.with_name(final.name + ".part").rename(final)
+            for p in parts:
+                p.unlink()
+        return final.name
+
+    failed, done = [], len({(s["name"], m) for s in samples for r in s["runs"] for m in r["files"]}) - len(jobs)
+    total_files = done + len(jobs)
+    with concurrent.futures.ThreadPoolExecutor(max(1, a.parallel)) as ex:
+        futs = {ex.submit(one, *j): j for j in jobs}
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                name = fut.result()
+                done += 1
+                print(f"   done {name} ({done}/{total_files} files)", flush=True)
+            except Exception as e:  # noqa: BLE001 - report all failures at the end
+                failed.append(f"{futs[fut][1]['name']}_{futs[fut][2]}: {e}")
+    if failed:
+        sys.exit("Some files did not download:\n  " + "\n  ".join(failed)
+                 + "\nRun the same command again (finished files are kept, partial ones resume).")
     shutil.rmtree(tmp, ignore_errors=True)
     with open(out / "geo_samples.tsv", "w") as f:
         f.write("\t".join(["sample", "gsm", "title", "runs"] + fields) + "\n")

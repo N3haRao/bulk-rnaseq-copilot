@@ -107,6 +107,17 @@ export default function Home() {
         </p>
       </section>
 
+      <section className="card">
+        <div className="row">
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <h2 style={{ margin: 0 }}>Or start from raw FASTQ files</h2>
+            <p className="muted small" style={{ margin: "4px 0 0" }}>Sequencing files already copied to the server: QC and trimming, alignment,
+              quantification and counts with the code bank's FASTQ pipeline, then this analysis, with splicing and isoforms.</p>
+          </div>
+          <Link to="/fastq" className="button secondary">Start from FASTQ</Link>
+        </div>
+      </section>
+
       <GeoImport text={text} busy={busy} setBusy={setBusy} />
 
       <section className="card">

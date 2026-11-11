@@ -142,7 +142,7 @@ Stage: final
 %runscript
     # The website. Data (uploads, runs, saved API key) live in $OMICS_DATA_DIR: bind a writable folder there.
     set -eu
-    . /opt/app/site-env.sh
+    E=/opt/app/site-env.sh; [ -f "${COPILOT_HOME:-/nonexistent}/copilot/containers/site-env.sh" ] && E="$COPILOT_HOME/copilot/containers/site-env.sh"; . "$E"
     PORT=${PORT:-8000}
     HOST=${HOST:-127.0.0.1}
     if ! mkdir -p "$OMICS_DATA_DIR" 2>/dev/null || [ ! -w "$OMICS_DATA_DIR" ]; then
@@ -157,7 +157,7 @@ Stage: final
 
 %apprun upstream
     # FASTQ -> counts, splicing and isoforms (later/scripts/run_upstream.R of the code bank in use); arguments are passed on.
-    . /opt/app/site-env.sh
+    E=/opt/app/site-env.sh; [ -f "${COPILOT_HOME:-/nonexistent}/copilot/containers/site-env.sh" ] && E="$COPILOT_HOME/copilot/containers/site-env.sh"; . "$E"
     exec /opt/conda/envs/r/bin/Rscript "$CODEBANK_DIR/later/scripts/run_upstream.R" "$@"
 
 %apprun rscript
@@ -167,14 +167,14 @@ Stage: final
 %apprun release
     # ops/release (integrate / approve / preview / status / rollback) with the image's Python and Node.
     # Needs COPILOT_HOME bound at the same path (containers/ada/release.slurm and ops/release do this).
-    . /opt/app/site-env.sh
+    E=/opt/app/site-env.sh; [ -f "${COPILOT_HOME:-/nonexistent}/copilot/containers/site-env.sh" ] && E="$COPILOT_HOME/copilot/containers/site-env.sh"; . "$E"
     [ "$SITE_DIR" != /opt/app ] || { echo "Set COPILOT_HOME (with copilot/ and codebank/ in it) and bind it." >&2; exit 1; }
     exec "$SITE_DIR/ops/release" "$@"
 
 %apprun tests
     # The code bank's module tests and the website's tests, inside the image (writes to a temporary copy).
     set -eu
-    . /opt/app/site-env.sh
+    E=/opt/app/site-env.sh; [ -f "${COPILOT_HOME:-/nonexistent}/copilot/containers/site-env.sh" ] && E="$COPILOT_HOME/copilot/containers/site-env.sh"; . "$E"
     T=$(mktemp -d)
     cp -r "$CODEBANK_DIR" "$T/codebank"
     cd "$T/codebank"

@@ -56,6 +56,10 @@ def home(tmp_path, monkeypatch):
     h = tmp_path / "home"
     h.mkdir()
     sh(h, "git", "clone", "-q", str(settings.codebank_dir), "codebank")
+    # the real code bank's own release tags come with the clone; the tests make their own
+    tags = sh(h / "codebank", "git", "tag", "-l").split()
+    if tags:
+        sh(h / "codebank", "git", "tag", "-d", *tags)
     sh(h, "git", "clone", "-q", str(SITE), "copilot")
     # the live site = this working tree's code (committed or not), so the test checks what is being developed
     for d in ("backend/app", "backend/tests"):

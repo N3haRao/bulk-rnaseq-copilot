@@ -40,8 +40,8 @@ docker --version 2>/dev/null                   # only if there is no Apptainer
 nproc; free -g; df -h ~ /data* /scratch* 2>/dev/null   # CPUs, memory, disk (~100 GB needed; more for FASTQ)
 curl -sI https://ollama.com | head -1          # internet (for the models and the Claude chat)
 curl -sI https://api.anthropic.com | head -1
-# Needed: Apptainer 1.2+ (or Singularity 3.8+). Without it, ask Dr. Hari / IT to install Apptainer
-# (it needs no root to run images). Docker alone would need a different set of scripts: tell me.
+# fuji (checked): A30 24 GB with driver 560, 64 CPUs, 503 GB RAM, Singularity 3.7.4, Docker 24, internet.
+# /home is shared and 98% full (1.3 TB free): this setup needs ~100 GB; ask before storing many FASTQ files.
 
 
 # -----------------------------------------------------------------------------
@@ -53,12 +53,14 @@ echo 'export COPILOT_RESTART_CMD="$COPILOT_HOME/copilot/containers/ada/restart_s
 mkdir -p $COPILOT_HOME && cd $COPILOT_HOME
 git clone --recurse-submodules -b main https://github.com/N3haRao/bulk-rnaseq-copilot.git
 cd bulk-rnaseq-copilot
-# Build the images here if Apptainer allows it (1-2 hours; needs internet and ~25 GB free):
-mkdir -p $COPILOT_HOME/apptainer-cache $COPILOT_HOME/apptainer-tmp
-export APPTAINER_CACHEDIR=$COPILOT_HOME/apptainer-cache APPTAINER_TMPDIR=$COPILOT_HOME/apptainer-tmp
-BUILD_OPTS="--fakeroot" containers/build.sh && mv containers/build/*.sif $COPILOT_HOME/
-# ...or copy images built on Ada:  scp ada:rnaseq-copilot/*.sif $COPILOT_HOME/   (they are the same)
-apptainer exec --nv $COPILOT_HOME/ollama.sif nvidia-smi -L    # the container sees the A30
+# Build the images (1-2 hours; ~25 GB of temporary space under containers/build). fuji's Singularity (3.7)
+# is too old to build them, so a current Apptainer runs inside Docker (you need to be able to run docker):
+docker run --rm hello-world | head -2          # "Hello from Docker!" = docker works for you
+BUILD_WITH=docker containers/build.sh && mv containers/build/*.sif $COPILOT_HOME/
+rm -rf containers/build/tmp containers/build/cache    # after a successful build
+# ...or copy images built elsewhere:  scp <machine>:rnaseq-copilot/*.sif $COPILOT_HOME/
+# The scripts use `singularity` when there is no `apptainer` command.
+singularity exec --nv $COPILOT_HOME/ollama.sif nvidia-smi -L   # the container sees the A30
 
 
 # -----------------------------------------------------------------------------

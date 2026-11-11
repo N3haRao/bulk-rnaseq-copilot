@@ -7,7 +7,7 @@
 # containers/ada/pull_model.sh), so the image stays small and models are shared.
 #
 #   apptainer instance start --nv --bind MODELS_DIR:/models ollama.sif ollama
-#   (drop --nv on a node without a GPU: qwen3:8b then runs on the CPU, slowly)
+#   (drop --nv on a node without a GPU: qwen3:8b then runs on the CPU, slowly; on a 20 GB+ GPU the site uses qwen3:30b)
 # =============================================================================
 Bootstrap: docker
 From: ollama/ollama:0.12.11

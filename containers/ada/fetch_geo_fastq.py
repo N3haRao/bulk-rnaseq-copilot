@@ -170,20 +170,45 @@ def md5(path: Path) -> str:
     return h.hexdigest()
 
 
-def fetch(url: str, dest: Path, want_md5: str, quiet: bool = False) -> None:
+CURL_CODES = {6: "host not found", 7: "could not connect", 18: "connection closed early", 22: "server refused (HTTP error)",
+              28: "too slow / timed out", 33: "server cannot resume", 35: "TLS error", 52: "empty reply",
+              56: "connection reset", 92: "HTTP/2 stream error"}
+
+
+def fetch(url: str, dest: Path, want_md5: str, quiet: bool = False, tries: int = 10) -> None:
+    """curl with resume. A connection that slows to a crawl (< 300 kB/s for 60 s) is dropped and reopened where it
+    stopped; attempts that made progress are not counted as failures. Failures alternate between ENA's HTTPS and FTP
+    servers and wait longer each time (30 s up to 5 min). A finished file with the wrong MD5 is downloaded again
+    from the start (no resume)."""
     if dest.exists() and md5(dest) == want_md5:
         return
     part = dest.with_name(dest.name + ".part")
-    for i in range(5):
-        rc = subprocess.call(["curl", "-fL", "--retry", "5", "--retry-delay", "10", "-C", "-", "-o", str(part), url]
-                             + (["-sS"] if quiet else []))
+    urls = [url, "ftp://" + url.split("://", 1)[1]]
+    failures, resume = 0, True
+    while failures < tries:
+        u = urls[failures % 2]
+        before = part.stat().st_size if part.exists() else 0
+        if not resume:
+            part.unlink(missing_ok=True)
+            before, resume = 0, True
+        rc = subprocess.call(["curl", "-fL", "--retry", "3", "--retry-delay", "15", "--speed-limit", "300000",
+                              "--speed-time", "60", "-C", "-", "-o", str(part), u] + (["-sS"] if quiet else []))
         if rc == 0 and md5(part) == want_md5:
             part.rename(dest)
             return
-        if rc == 0:            # complete but wrong: start this file again
-            part.unlink(missing_ok=True)
-        print(f"   retrying {dest.name} ({i + 1}/5)", flush=True)
-        time.sleep(10)
+        if rc == 0:
+            why, resume = "finished but the MD5 sum is wrong; starting this file again", False
+        elif (part.stat().st_size if part.exists() else 0) > before:
+            print(f"   {dest.name}: connection dropped ({CURL_CODES.get(rc, f'curl {rc}')}), resuming", flush=True)
+            continue
+        else:
+            why = CURL_CODES.get(rc, f"curl error {rc}")
+            if rc == 33:
+                resume = False
+        failures += 1
+        wait = min(300, 30 * 2 ** (failures - 1))
+        print(f"   {dest.name}: {why} [{u.split(':')[0]}]; retry {failures}/{tries} in {wait} s", flush=True)
+        time.sleep(wait)
     raise RuntimeError(f"could not download {url} correctly")
 
 

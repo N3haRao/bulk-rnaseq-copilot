@@ -243,4 +243,3 @@ function Recurrent({ c }: { c: ComparisonT }) {
     </>
   );
 }
-    

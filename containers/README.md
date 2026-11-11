@@ -15,13 +15,14 @@ Package versions are pinned in `env-r.yml`, `env-tools.yml` and `env-app.yml`, a
 
 ## 1. Build the images
 
-You need Apptainer 1.2 or newer, git, about 25 GB of free disk, and internet access (Docker Hub, conda-forge, bioconda, Bioconductor, Zenodo for MSigDB, GEO for one example dataset). Build on Ada if Apptainer there allows building (`--fakeroot`), or on any Linux machine where you are root, then copy the `.sif` files.
+You need Apptainer 1.2 or newer (or Docker, with `BUILD_WITH=docker`), git, about 25 GB of free disk, and internet access (Docker Hub, conda-forge, bioconda, Bioconductor, Zenodo for MSigDB, GEO for one example dataset). Build on Ada if Apptainer there allows building (`--fakeroot`), or on any Linux machine where you are root, then copy the `.sif` files.
 
 ```bash
 git clone --recurse-submodules -b main https://github.com/N3haRao/bulk-rnaseq-copilot.git
 cd bulk-rnaseq-copilot
 containers/build.sh                          # both images -> containers/build/
 BUILD_OPTS="--fakeroot" containers/build.sh  # where you are not root (if the cluster allows it)
+BUILD_WITH=docker containers/build.sh        # inside Docker, with a current Apptainer (e.g. fuji: Singularity 3.7 cannot build)
 ```
 
 `build.sh` builds from the last **commit** (uncommitted changes are left out) and copies the code bank as a git clone at the pinned commit. Every run then records that commit, and the code .zip contains it. At the end of the build Apptainer runs the image's own `%test` section: R packages, tools, Python packages, frontend and code-bank commit. To run the full test suites inside the finished image (about 10 minutes):
@@ -73,6 +74,8 @@ Then open <http://localhost:8000>. The job starts the model server (on the GPU i
 The script asks for no partition or GPU, so it runs on Ada's default partition (`defq`, one node, no GPU). On another server add `--partition` / `--gres` on the sbatch command line. The GPU is only for the model. Without one, the model runs on the CPU (slowly), and with `OLLAMA_MODEL=none` the site uses Claude (if a key is saved) or its built-in rules.
 
 ## A server without SLURM (fuji: one NVIDIA A30, 24 GB)
+
+The images run with Apptainer 1.x or Singularity 3.6+: the scripts call `singularity` when there is no `apptainer` command (fuji has Singularity 3.7.4).
 
 The same scripts work without a scheduler. Step by step: [docs/fuji_setup_commands.sh](../docs/fuji_setup_commands.sh).
 

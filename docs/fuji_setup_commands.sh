@@ -5,11 +5,12 @@
 #
 # What you end up with: ~/rnaseq-copilot on fuji with the images, the models, the site folders and
 # a data folder. The site runs as a background process (no SLURM on fuji) and you open it in your
-# Mac's browser through an ssh tunnel. The open-weight models run on the A30:
-#   qwen3:8b         the site's assistants (setup chat, report writer), ~6 GB of GPU memory
-#   qwen3-coder:30b  the release agent, ~21 GB of GPU memory with its 32k context (flash attention +
-#                    8-bit KV cache). Only one model fits at a time: Ollama swaps them automatically
-#                    (a release takes the GPU for 10-30 minutes; the site chat waits or answers slowly).
+# Mac's browser through an ssh tunnel. Both open-weight models are Qwen3 30B, fully on the A30:
+#   qwen3:30b        the site's assistants (setup chat, report writer), ~19-20 GB of GPU memory
+#   qwen3-coder:30b  the release agent, ~21 GB with its 32k context (flash attention + 8-bit KV cache)
+# The scripts pick qwen3:30b for the site by themselves on a GPU with 20 GB or more (qwen3:8b elsewhere).
+# Only one 30B model fits in 24 GB at a time: Ollama swaps them automatically (~10-20 s). During a
+# release (10-30 minutes) the site's assistant waits for the GPU, or falls back to its built-in rules.
 # Ada's guide (docs/ada_setup_commands.sh) has more troubleshooting; most of it applies here too.
 # =============================================================================
 
@@ -63,7 +64,7 @@ apptainer exec --nv $COPILOT_HOME/ollama.sif nvidia-smi -L    # the container se
 # -----------------------------------------------------------------------------
 # STEP 4. [fuji] Models and the site folders (once)
 # -----------------------------------------------------------------------------
-containers/ada/pull_model.sh                   # qwen3:8b + qwen3-coder:30b into $COPILOT_HOME/models (~24 GB)
+containers/ada/pull_model.sh                   # qwen3:30b + qwen3-coder:30b into $COPILOT_HOME/models (~38 GB)
 containers/ada/setup_home.sh                   # copilot/ (the live site), codebank/ (where releases are made)
 
 
@@ -79,7 +80,7 @@ $COPILOT_HOME/copilot/containers/ada/start_site.sh
 #   $COPILOT_HOME/copilot/containers/ada/stop_site.sh
 #   $COPILOT_HOME/copilot/containers/ada/restart_site.sh      (new port: use the new tunnel line)
 # Log:  ls -t $COPILOT_HOME/rnaseq-copilot-*.log | head -1 | xargs tail -f
-# GPU use while it runs:  nvidia-smi
+# GPU use while it runs:  nvidia-smi    (the log's "Model server:" line should say qwen3:30b on the GPU)
 
 
 # -----------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { api, extraFileUrl, type ExtraAnalysis, type ExtraColumn, type ExtraForm, type Job } from "../api";
+import { api, extraFileUrl, type ExtraAnalysis, type ExtraColumn, type ExtraForm, type FromFastq, type Job } from "../api";
 import { Badge, Markdown, Notice } from "./common";
 import { fmtNum, fmtP } from "../format";
 
@@ -11,6 +11,7 @@ const RUNNING = new Set(["queued", "running"]);
 export default function ExtrasTab({ job }: { job: Job }) {
   const [forms, setForms] = useState<Record<string, ExtraForm> | null>(null);
   const [analyses, setAnalyses] = useState<Record<string, ExtraAnalysis | null>>({});
+  const [fromFastq, setFromFastq] = useState<FromFastq | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -18,6 +19,7 @@ export default function ExtrasTab({ job }: { job: Job }) {
       const r = await api.extras(job.id);
       setForms(r.forms);
       setAnalyses(r.analyses);
+      setFromFastq(r.from_fastq);
       return r.analyses;
     } catch (e) {
       setError((e as Error).message);
@@ -60,7 +62,12 @@ export default function ExtrasTab({ job }: { job: Job }) {
         extra input files made from the sequencing reads; when they finish, they are added to the report, the PowerPoint, the
         code download and new chats.
       </p>
-      {Object.values(forms).map((f) => <ModuleCard key={f.module} job={job} form={f} a={analyses[f.module] ?? null} onStarted={started} />)}
+      {fromFastq && (
+        <Notice kind="info">These counts were made from FASTQ files on the server ({fromFastq.folder}). The analyses below can use that job's
+          rMATS tables and Salmon results directly; they start on their own when the analysis finishes.</Notice>
+      )}
+      {Object.values(forms).map((f) => <ModuleCard key={f.module} job={job} form={f} a={analyses[f.module] ?? null} onStarted={started}
+        fastq={fromFastq?.modules[f.module] ?? null} />)}
     </>
   );
 }
@@ -71,7 +78,8 @@ function inline(text: string): ReactNode[] {
     part.startsWith("**") && part.endsWith("**") ? <strong key={i}>{part.slice(2, -2)}</strong> : <span key={i}>{part}</span>);
 }
 
-function ModuleCard({ job, form, a, onStarted }: { job: Job; form: ExtraForm; a: ExtraAnalysis | null; onStarted: (a: ExtraAnalysis) => void }) {
+function ModuleCard({ job, form, a, onStarted, fastq }: { job: Job; form: ExtraForm; a: ExtraAnalysis | null;
+  onStarted: (a: ExtraAnalysis) => void; fastq: { available: boolean; why?: string } | null }) {
   const initial = Object.fromEntries(form.form.map((f) => [f.name, f.default === undefined || f.default === null ? "" : String(f.default)]));
   const [values, setValues] = useState<Record<string, string>>(initial);
   const [files, setFiles] = useState<Record<string, File[]>>({});
@@ -88,6 +96,13 @@ function ModuleCard({ job, form, a, onStarted }: { job: Job; form: ExtraForm; a:
       setShowForm(false);
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   }
+  async function fromFastq() {
+    setBusy(true); setErr(null);
+    try {
+      onStarted(await api.startExtraFromFastq(job.id, form.module));
+      setShowForm(false);
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  }
   const running = a && RUNNING.has(a.status);
   return (
     <section className="card">
@@ -98,6 +113,12 @@ function ModuleCard({ job, form, a, onStarted }: { job: Job; form: ExtraForm; a:
         {a && !running && !showForm && <button className="secondary" onClick={() => setShowForm(true)}>Run again</button>}
       </div>
       <p className="muted small">{inline(form.description)}</p>
+      {(!a || showForm) && !running && fastq && (
+        fastq.available
+          ? <p><button type="button" onClick={fromFastq} disabled={busy}>{busy ? <><span className="spinner" /> Starting…</> : "Run with the FASTQ results"}</button>
+            <span className="muted small"> default settings; or upload files and change settings below</span></p>
+          : <p className="muted small">The FASTQ results cannot be used here: {fastq.why}</p>
+      )}
       {(!a || showForm) && !running && (
         <form onSubmit={submit}>
           {form.inputs.map((i) => (

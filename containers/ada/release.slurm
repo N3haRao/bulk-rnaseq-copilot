@@ -36,6 +36,8 @@ COPILOT_HOME=$(readlink -f "${COPILOT_HOME:-$HOME/rnaseq-copilot}")
 export COPILOT_HOME
 export RELEASE_AGENT_MODEL=${RELEASE_AGENT_MODEL:-qwen3-coder:30b}
 module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true
+# Singularity 3.6+ works in place of Apptainer (e.g. fuji: singularity 3.7)
+if ! command -v apptainer >/dev/null && command -v singularity >/dev/null; then apptainer() { singularity "$@"; }; fi
 OLL=$COPILOT_HOME/ollama.sif
 SITE=$COPILOT_HOME/copilot
 [ -x "$SITE/ops/release" ] || { echo "No site at $SITE (containers/ada/setup_home.sh)" >&2; exit 1; }

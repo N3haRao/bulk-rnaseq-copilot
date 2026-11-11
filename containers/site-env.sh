@@ -48,9 +48,15 @@ fi
 ensure_frontend() {
   [ "$SITE_DIR" = /opt/app ] && return 0
   local fe=$SITE_DIR/frontend
+  # an earlier version linked the whole folder into the (read-only) image: Vite must write node_modules/.vite-temp
+  [ -L "$fe/node_modules" ] && [ "$(readlink "$fe/node_modules")" = /opt/app/frontend/node_modules ] && rm "$fe/node_modules"
   if [ ! -e "$fe/node_modules" ]; then
     if cmp -s "$fe/package-lock.json" /opt/app/frontend/package-lock.json; then
-      ln -s /opt/app/frontend/node_modules "$fe/node_modules"     # the image's packages (same lock file)
+      # the image's packages (same lock file): a writable folder of links to each of them
+      mkdir "$fe/node_modules"
+      for p in /opt/app/frontend/node_modules/* /opt/app/frontend/node_modules/.bin; do
+        [ -e "$p" ] && ln -s "$p" "$fe/node_modules/$(basename "$p")"
+      done
     else
       echo "frontend/package-lock.json differs from the image's; installing packages (needs internet) ..." >&2
       (cd "$fe" && npm ci --no-audit --no-fund >&2) || { echo "npm ci failed; rebuild the image." >&2; return 1; }

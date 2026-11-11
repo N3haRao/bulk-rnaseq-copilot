@@ -36,6 +36,8 @@ class JobManager:
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
         self._procs: dict[str, subprocess.Popen] = {}
         self._lock = threading.Lock()
+        # called with the job record when an analysis ends (e.g. start the analyses its FASTQ results feed)
+        self.on_finished: list = []
 
     # ---- storage -------------------------------------------------------------------
     def job_dir(self, job_id: str) -> Path:
@@ -134,8 +136,13 @@ class JobManager:
         if code != 0 or status == "failed":
             status = "failed"
             error = self._failure_message(d, run_dir)
-        self._update(job_id, status=status, finished=_now(), exit_code=code,
-                     run_dir=str(run_dir) if run_dir else None, error=error)
+        job = self._update(job_id, status=status, finished=_now(), exit_code=code,
+                           run_dir=str(run_dir) if run_dir else None, error=error)
+        for hook in self.on_finished:
+            try:
+                hook(job)
+            except Exception:  # noqa: BLE001 - a hook never breaks the run record
+                pass
 
     def _failure_message(self, job_dir: Path, run_dir: Path | None) -> str:
         """The most useful plain-language reason for a failed run."""

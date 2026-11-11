@@ -182,8 +182,15 @@ Stage: final
       [ -f "$t" ] || continue
       echo "== $t"; Rscript "$t" | tail -3
     done
-    cp -r "$SITE_DIR/backend" "$T/backend"
-    cd "$T/backend"
+    # the whole site as a git clone when it is one (the release tests need it), else just the backend
+    if git -C "$SITE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      git clone -q "$SITE_DIR" "$T/site"
+      rm -rf "$T/site/backend" && cp -r "$SITE_DIR/backend" "$T/site/backend"     # include uncommitted changes
+      cd "$T/site/backend"
+    else
+      cp -r "$SITE_DIR/backend" "$T/backend"
+      cd "$T/backend"
+    fi
     CODEBANK_DIR="$T/codebank" /opt/conda/envs/app/bin/python -m pytest -q -p no:cacheprovider
     rm -rf "$T"
 
@@ -200,7 +207,7 @@ Stage: final
 
 %labels
     org.opencontainers.image.title RNA-seq analysis site (bulk RNA-seq copilot)
-    org.opencontainers.image.source https://github.com/N3haRao/bulk-rnaseq-copilot
+    org.opencontainers.image.source https://github.com/N3haRao/agentic-omics-testbed
 
 %help
     RNA-seq analysis site with the lab's code bank (DESeq2 pipeline, splicing, isoforms, FASTQ tools).

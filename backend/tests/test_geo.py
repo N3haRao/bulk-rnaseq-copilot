@@ -2,6 +2,7 @@
 
 import gzip
 import io
+import os
 from pathlib import Path
 
 import httpx
@@ -11,8 +12,10 @@ from fastapi.testclient import TestClient
 from app import geo, tables, uploads
 from app.config import settings
 
-REAL_SUPPL = next(Path("/root/.claude/uploads").glob("*/*GSE60450_Lactation-GenewiseCounts.txt.gz"), None) \
-    if Path("/root/.claude/uploads").exists() else None
+# Optional: GEO's real GSE60450 counts file (GSE60450_Lactation-GenewiseCounts.txt.gz) for one extra test
+REAL_SUPPL = Path(os.environ["GEO_TEST_FILE"]) if os.environ.get("GEO_TEST_FILE") else None
+if REAL_SUPPL is not None and not REAL_SUPPL.is_file():
+    REAL_SUPPL = None
 
 LIBS = ["DG", "DH", "DI", "DJ", "DK", "DL", "LA", "LB", "LC", "LD", "LE", "LF"]
 CELL = ["basal"] * 6 + ["luminal"] * 6

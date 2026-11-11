@@ -297,8 +297,22 @@ export type ChatEvent =
   | { type: "error"; text: string }
   | { type: "done" };
 
-// ---- Optional analyses: splicing and isoforms ----
-export type ExtraModule = "splicing" | "isoforms";
+// ---- Optional analyses on a run (whatever the code bank's manifest offers) ----
+export type ExtraModule = string;
+
+export interface ExtraFormField {
+  name: string; type: "number" | "integer" | "enum" | "bool" | "text" | "run_group"; label?: string; help?: string;
+  default?: unknown; min?: number; max?: number; options?: { value: string; label: string }[];
+}
+export interface ExtraForm {
+  module: string; title: string; description: string;
+  inputs: { name: string; label?: string; accept?: string[]; multiple?: boolean; required?: boolean; help?: string }[];
+  form: ExtraFormField[];
+}
+export interface ExtraColumn {
+  label: string; value?: string; fallback?: string; template?: string;
+  format?: "num0" | "num2" | "p" | "flag"; style?: "small" | "sign";
+}
 
 export interface ExtraAnalysis {
   id: string;
@@ -310,14 +324,15 @@ export interface ExtraAnalysis {
   error: string | null;
   note: string | null;
   settings: Record<string, unknown>;
-  inputs: string[];
+  inputs: { input: string; files: string[]; used: Record<string, string> }[];
   steps: { name: string; description: string; status: string }[];
   run_id?: string;
+  headline?: string[];
+  tiles?: { label: string; value: number | string | null; style?: "up" | "down" | null }[];
   figures?: Figure[];
+  top_tables?: { title: string; columns: ExtraColumn[]; empty: string; rows: Record<string, string>[] }[];
   methods_md?: string | null;
   summary?: Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
-  top?: Record<string, string>[];
-  top_dei?: Record<string, string>[];
   tables?: string[];
   validation?: { checks: Check[] } | null;
 }
@@ -486,20 +501,13 @@ export const api = {
   geoImport: (accession: string, countsOption: string) =>
     request<Upload & { description: string }>("/api/geo/import", json({ accession, counts_option: countsOption })),
   extras: (jobId: string) =>
-    request<{ available: Partial<Record<ExtraModule, string>>; analyses: Record<ExtraModule, ExtraAnalysis | null> }>(`/api/runs/${jobId}/extras`),
+    request<{ available: Record<string, string>; forms: Record<string, ExtraForm>; analyses: Record<string, ExtraAnalysis | null> }>(`/api/runs/${jobId}/extras`),
   extra: (jobId: string, module: ExtraModule) => request<ExtraAnalysis>(`/api/runs/${jobId}/extras/${module}`),
-  startSplicing: (jobId: string, files: File[], opts: Record<string, string>) => {
+  startExtra: (jobId: string, module: ExtraModule, files: Record<string, File[]>, fields: Record<string, string>) => {
     const form = new FormData();
-    files.forEach((f) => form.append("files", f));
-    Object.entries(opts).forEach(([k, v]) => form.append(k, v));
-    return request<ExtraAnalysis>(`/api/runs/${jobId}/extras/splicing`, { method: "POST", body: form });
-  },
-  startIsoforms: (jobId: string, quantZip: File, annotation: File | null, opts: Record<string, string>) => {
-    const form = new FormData();
-    form.append("quant_zip", quantZip);
-    if (annotation) form.append("annotation", annotation);
-    Object.entries(opts).forEach(([k, v]) => form.append(k, v));
-    return request<ExtraAnalysis>(`/api/runs/${jobId}/extras/isoforms`, { method: "POST", body: form });
+    Object.entries(files).forEach(([name, fs]) => fs.forEach((f) => form.append(name, f)));
+    Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+    return request<ExtraAnalysis>(`/api/runs/${jobId}/extras/${module}`, { method: "POST", body: form });
   },
   comparisons: () => request<{ available: boolean; comparisons: ComparisonItem[]; runs: CompareRun[] }>("/api/comparisons"),
   comparison: (id: string) => request<Comparison>(`/api/comparisons/${id}`),

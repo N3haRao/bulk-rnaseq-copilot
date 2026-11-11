@@ -6,8 +6,10 @@ Two images:
 
 | Image | Contains | Size |
 |---|---|---|
-| `rnaseq-copilot.sif` (`rnaseq-copilot.def`) | The website (backend + built frontend, Chromium for PDFs), R 4.5 with every code-bank package (DESeq2, apeglm, fgsea + the MSigDB database, DEXSeq, stageR, tximport, annotation and example data), the code bank as a git clone at the commit the site pins, and fastp, STAR, samtools, Salmon and rMATS for the FASTQ steps | about 6-8 GB |
-| `ollama.sif` (`ollama.def`) | The Ollama model server for the open-weight assistants. Models are kept outside the image, in a folder bound to `/models` | about 2 GB |
+| `rnaseq-copilot.sif` (`rnaseq-copilot.def`) | The software: Python for the website, Node to build its frontend, Chromium for PDFs, R 4.5 with every code-bank package (DESeq2, apeglm, fgsea + the MSigDB database, DEXSeq, stageR, tximport, annotation and example data), and fastp, STAR, samtools, Salmon and rMATS for the FASTQ steps. Also a copy of the site and code bank, used only when no site folder is mounted | about 6-8 GB |
+| `ollama.sif` (`ollama.def`) | The Ollama model server for the open-weight assistants (`qwen3:8b`) and the release agent (`qwen3-coder:30b`). Models are kept outside the image, in a folder bound to `/models` | about 2 GB |
+
+**The code is not taken from the image on the server.** With `COPILOT_HOME` set, the site runs from `$COPILOT_HOME/copilot` and the code bank from `$COPILOT_HOME/codebank-live`, both mounted into the container at the same path (`site-env.sh`). A code bank release or a site update then needs only a restart (see [docs/RELEASES.md](../docs/RELEASES.md)). Rebuild the image only when the software changes: `env-*.yml`, `backend/requirements.txt` or `frontend/package-lock.json`.
 
 Package versions are pinned in `env-r.yml`, `env-tools.yml` and `env-app.yml`, at the versions all test suites passed with: main pipeline, splicing (20), isoforms (15), FASTQ/BAM steps (22) and website (78). The exact environments are also exported into the image (`/opt/app/env-*.lock.yml`).
 
@@ -17,7 +19,7 @@ You need Apptainer 1.2 or newer, git, about 25 GB of free disk, and internet acc
 
 ```bash
 git clone --recurse-submodules -b main https://github.com/N3haRao/bulk-rnaseq-copilot.git
-cd agentic-omics-testbed
+cd bulk-rnaseq-copilot
 containers/build.sh                          # both images -> containers/build/
 BUILD_OPTS="--fakeroot" containers/build.sh  # where you are not root (if the cluster allows it)
 ```
@@ -31,26 +33,33 @@ apptainer run --app tests containers/build/rnaseq-copilot.sif
 ## 2. Set up a folder on Ada
 
 ```bash
-mkdir -p ~/rnaseq-copilot                    # or a project folder: COPILOT_DIR=/project/<lab>/rnaseq-copilot
+mkdir -p ~/rnaseq-copilot                    # or a project folder: COPILOT_HOME=/project/<lab>/rnaseq-copilot
 scp containers/build/*.sif ada:~/rnaseq-copilot/
-# on an Ada login node (needs internet, once): download the model into ~/rnaseq-copilot/models
-COPILOT_DIR=~/rnaseq-copilot containers/ada/pull_model.sh            # qwen3:8b, about 5 GB
+# on Ada, from a clone of this repository:
+COPILOT_HOME=~/rnaseq-copilot containers/ada/pull_model.sh     # qwen3:8b (~5 GB) + qwen3-coder:30b (~19 GB); needs internet
+COPILOT_HOME=~/rnaseq-copilot containers/ada/setup_home.sh     # copilot/ and codebank/ folders, first release live
 ```
 
 The folder then holds:
 
 ```
 rnaseq-copilot.sif   ollama.sif
+copilot/             the live site (git); code bank releases are merged in by ops/release
+codebank/            the code bank (git); bioinformaticians commit and run scripts/release.sh here
+codebank-live        -> codebank-releases/vX.Y.Z, the release the site uses
 models/              open-weight models (pull_model.sh)
-data/                uploads, runs, chats, the saved API key: private (chmod 700, set by site.slurm)
+data/                uploads, runs, chats, the saved API key: private (chmod 700)
 secrets.env          optional: ANTHROPIC_API_KEY=sk-ant-...  (chmod 600), instead of the Settings page
 ```
 
 ## 3. Run the site as a job
 
 ```bash
-sbatch containers/ada/site.slurm             # COPILOT_DIR=... sbatch ... for another folder
-cat rnaseq-copilot-<jobid>.log               # shows the node, the port and the ssh command
+cd ~/rnaseq-copilot
+sbatch copilot/containers/ada/site.slurm                 # COPILOT_HOME=... sbatch ... for another folder
+sbatch --gres=gpu:1 copilot/containers/ada/site.slurm    # on a server with GPUs
+OLLAMA_MODEL=none sbatch copilot/containers/ada/site.slurm   # without the open-weight model
+cat rnaseq-copilot-<jobid>.log                            # shows the node, the port and the ssh command
 ```
 
 On your computer, open the tunnel the log prints and keep it open:
@@ -59,16 +68,29 @@ On your computer, open the tunnel the log prints and keep it open:
 ssh -N -L 8000:127.0.0.1:<port> -J <you>@<ada-login> <you>@<node>
 ```
 
-Then open <http://localhost:8000>. The job starts the model server (on the GPU if the node has one) and then the site. Both listen only on the compute node's loopback interface (127.0.0.1), so they can only be reached through your tunnel. Stop with `scancel <jobid>`; the data folder keeps everything for the next job.
+Then open <http://localhost:8000>. The job starts the model server (on the GPU if the job has one, otherwise on the CPU) and then the site. If the frontend sources are newer than the built frontend (after an update), the job rebuilds it first. Both listen only on the compute node's loopback interface (127.0.0.1), so they can only be reached through your tunnel. Stop with `scancel <jobid>`; the data folder keeps everything for the next job.
 
-Adjust the `#SBATCH` lines (partition, GPU, memory, time) to Ada's policies. The GPU is only for the model: without one, remove `--gres` and the model runs on the CPU (slowly), or the site falls back to its built-in rules.
+The script asks for no partition or GPU, so it runs on Ada's default partition (`defq`, one node, no GPU). On another server add `--partition` / `--gres` on the sbatch command line. The GPU is only for the model. Without one, the model runs on the CPU (slowly), and with `OLLAMA_MODEL=none` the site uses Claude (if a key is saved) or its built-in rules.
+
+## A server without SLURM (fuji: one NVIDIA A30, 24 GB)
+
+The same scripts work without a scheduler. Step by step: [docs/fuji_setup_commands.sh](../docs/fuji_setup_commands.sh).
+
+- `containers/ada/start_site.sh` starts the site as a background process that keeps running after you log out (with SLURM it submits the job instead). `stop_site.sh` and `restart_site.sh` stop and restart it. The log prints the tunnel command, `ssh -N -L 8000:127.0.0.1:<port> you@fuji.nri.bcm.edu`.
+- Releases: `scripts/release.sh` runs `release.slurm` directly. It reuses the site's model server, so a single Ollama holds the GPU.
+- GPU memory: `qwen3-coder:30b` with a 32k context uses about 21 GB on the A30, with flash attention and an 8-bit KV cache. The site model, `qwen3:8b`, uses about 6 GB. Only one fits at a time, so Ollama swaps them as needed (`OLLAMA_MAX_LOADED_MODELS=1`).
+- FASTQ jobs: `nohup bash containers/ada/upstream.slurm ... &`.
+
+## Code bank releases
+
+`scripts/release.sh` in `$COPILOT_HOME/codebank` tags a release and submits `containers/ada/release.slurm`. That job starts `qwen3-coder:30b`, checks the site against the release in a staging copy, lets the release agent fix what is needed, and writes a review for the bioinformatician who released it. They approve with `copilot/ops/release approve vX.Y.Z`, which restarts the site through `containers/ada/restart_site.sh`. Step by step: [docs/RELEASES.md](../docs/RELEASES.md).
 
 ## 4. FASTQ files: batch jobs
 
 `codebank/later/scripts/run_upstream.R` runs trimming, STAR, Salmon, gene counts, rMATS, splicing, sashimi plots and isoforms from one config file (see `codebank/later/README.md`):
 
 ```bash
-CONFIG=/project/<lab>/exp1/upstream.yaml sbatch containers/ada/upstream.slurm
+CONFIG=/project/<lab>/exp1/upstream.yaml sbatch copilot/containers/ada/upstream.slurm     # uses the live code bank release
 ```
 
 STAR needs about 32 GB of memory for human or mouse (the script asks for 64 GB and 16 CPUs). The results include `counts.csv` and `samples.csv` for the site, plus Salmon and rMATS output for the **Splicing & isoforms** tab. Any code-bank script can also be run directly:

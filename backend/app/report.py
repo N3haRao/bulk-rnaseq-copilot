@@ -303,41 +303,26 @@ def render_html(job: dict, run_dir: Path, narrative: dict) -> str:
 
 
 def _extras_html(job: dict, run_dir: Path) -> str:
-    """Optional analyses (splicing, isoforms) that finished for this run: headline numbers, key figures, methods."""
+    """Optional analyses that finished for this run: headline sentences, key figures and methods, as the manifest describes them."""
     from . import extras
     from .config import settings
     job_dir = settings.jobs_dir / job["id"] if job.get("id") else run_dir.parent.parent
     parts = []
-    for module in extras.MODULES:
-        d = extras.latest(job_dir, module) if (job_dir / "extras" / module).exists() else None
-        if d is None:
-            continue
+    for _module, d in extras.finished(job_dir):
         ov = extras.overview(d)
-        if ov["status"] not in ("success", "success_with_errors"):
-            continue
         rd = extras.run_dir_of(d)
-        sm = ov.get("summary") or {}
-        if module == "splicing":
-            head = (f"<p>{sm.get('n_significant', 0)} of {sm.get('n_events_tested', 0)} splicing events were significant "
-                    f"({E(str(sm.get('significance_rule', '')))}): {sm.get('n_up', 0)} with more and {sm.get('n_down', 0)} with less "
-                    f"inclusion, in {sm.get('n_genes_significant', 0)} genes. {E(str(sm.get('sign_convention', '')))}.</p>")
-            sve = (sm.get("splicing_vs_expression") or {}).get("genes") or {}
-            if sve:
-                head += "<p class='muted small'>Compared with this run's gene-level results: " + E("; ".join(f"{k}: {v}" for k, v in sve.items())) + ".</p>"
-        else:
-            dei, dui = sm.get("dei") or {}, sm.get("dui") or {}
-            head = (f"<p><strong>Isoform expression (DEI):</strong> {dei.get('n_significant', 0)} transcripts ({dei.get('n_up', 0)} higher, "
-                    f"{dei.get('n_down', 0)} lower) in {dei.get('n_genes_with_significant_transcripts', 0)} genes; {E(str(dei.get('significance_rule', '')))}.</p>"
-                    + (f"<p><strong>Isoform usage (DUI):</strong> {dui.get('n_genes_significant', 0)} of {dui.get('n_genes_tested', 0)} genes change "
-                       f"how their transcripts are used ({dui.get('n_isoform_switches', 0)} isoform switches); {E(str(dui.get('significance_rule', '')))}.</p>"
-                       if not dui.get("status") else f"<p>Isoform usage was not tested: {E(str(dui.get('reason', '')))}</p>"))
-        figs = "".join(_img(rd, f["path"], f["title"], f["caption"]) for f in ov.get("figures", [])[:2])
+        head = "".join(f"<p>{_inline_md(h)}</p>" for h in ov.get("headline") or [])
+        figs = "".join(_img(rd, f["path"], f["title"], f.get("caption", "")) for f in ov.get("figures", [])[:2])
         parts.append(f"<h3>{E(ov['title'])}</h3>{head}<div class='figs'>{figs}</div>"
                      + (f"<details><summary>Methods</summary>{_md(ov['methods_md'])}</details>" if ov.get("methods_md") else ""))
     if not parts:
         return ""
     return ("<section><h2>Additional analyses</h2><p class='muted small'>Optional analyses run for this comparison with the code bank's "
-            "splicing and isoform modules; numbers and figures come from their result files.</p>" + "".join(parts) + "</section>")
+            "modules; numbers and figures come from their result files.</p>" + "".join(parts) + "</section>")
+
+
+def _inline_md(s: str) -> str:
+    return re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", E(s))
 
 
 def _origin(o: dict | None) -> str:

@@ -117,16 +117,23 @@ def salmon_zip(samples=SAMPLES, ko_from: int = 3) -> bytes:
 
 def test_splicing_on_a_run(client):
     c, job_dir, run = client
-    assert set(c.get(f"/api/runs/{job_dir.name}/extras").json()["available"]) == {"splicing", "isoforms"}
-    r = c.post(f"/api/runs/{job_dir.name}/extras/splicing", files=[("files", ("rmats.zip", rmats_zip(), "application/zip"))],
+    lst = c.get(f"/api/runs/{job_dir.name}/extras").json()
+    assert set(lst["available"]) == {"splicing", "isoforms"}
+    form = lst["forms"]["splicing"]                              # drawn from the code bank's manifest
+    assert "KO than in WT" in form["description"] and form["inputs"][0]["name"] == "rmats_tables"
+    grp = next(f for f in form["form"] if f["type"] == "run_group")
+    assert grp["options"][0]["label"] == "KO (test group)"
+    r = c.post(f"/api/runs/{job_dir.name}/extras/splicing", files=[("rmats_tables", ("rmats.zip", rmats_zip(), "application/zip"))],
                data={"delta_psi_cutoff": "0.1"})
     assert r.status_code == 200, r.text
     ov = wait(c, job_dir.name, "splicing")
     assert ov["status"] == "success", ov.get("error")
-    sm = ov["summary"]
+    sm = ov["summary"]["s"]
     assert sm["n_significant"] == 20 and sm["n_down"] == 20 and sm["comparison"] == "KO vs WT"
-    assert ov["figures"] and ov["methods_md"] and len(ov["top"]) == 20
+    assert ov["figures"] and ov["methods_md"] and len(ov["top_tables"][0]["rows"]) == 20
     assert sm["splicing_vs_expression"]                        # compared with the run's DE results
+    assert ov["headline"][0].startswith("20 of 300 splicing events were significant") and "Compared with" in ov["headline"][1]
+    assert [t["value"] for t in ov["tiles"]][:2] == [300, 20]
     fig = c.get(f"/api/runs/{job_dir.name}/extras/splicing/files/{ov['figures'][0]['path']}")
     assert fig.status_code == 200 and fig.headers["content-type"] == "image/png"
     assert c.get(f"/api/runs/{job_dir.name}/extras/splicing/files/../../job.json").status_code == 404
@@ -151,24 +158,45 @@ def test_isoforms_on_a_run(client):
     c, job_dir, run = client
     r = c.post(f"/api/runs/{job_dir.name}/extras/isoforms", files={"quant_zip": ("salmon.zip", salmon_zip(), "application/zip")})
     assert r.status_code == 200, r.text
+    cfg = yaml.safe_load(next((job_dir / "extras" / "isoforms").glob("*/run_config.yaml")).read_text())
+    assert cfg["covariates"] == ["sex"] and cfg["test_level"] == "KO" and cfg["quant_type"] == "salmon"   # from the run / fixed
     ov = wait(c, job_dir.name, "isoforms")
     assert ov["status"] == "success", ov.get("error")
     dui = ov["summary"]["dui"]
     assert dui["n_genes_significant"] >= 20 and dui["n_isoform_switches"] >= 20, dui
-    assert ov["top"] and ov["top_dei"] and any("usage" in f["title"].lower() for f in ov["figures"])
-    assert ov["settings"]["annotation"] == "tx2gene_from_names.csv"     # gene taken from GENCODE names
+    assert ov["top_tables"][0]["rows"] and ov["top_tables"][1]["rows"] and any("usage" in f["title"].lower() for f in ov["figures"])
+    ann = next(i for i in ov["inputs"] if i["input"] == "annotation")
+    assert ann["used"] == {"tx2gene_file": "tx2gene_from_names.csv"}      # gene taken from GENCODE names
 
 
 def test_bad_uploads_are_explained(client):
     c, job_dir, _ = client
-    r = c.post(f"/api/runs/{job_dir.name}/extras/splicing", files=[("files", ("notes.txt", b"hello", "text/plain"))])
+    r = c.post(f"/api/runs/{job_dir.name}/extras/splicing", files=[("rmats_tables", ("notes.txt", b"hello", "text/plain"))])
     assert r.status_code == 422 and "No rMATS tables" in r.json()["detail"]
+    r = c.post(f"/api/runs/{job_dir.name}/extras/splicing", files=[("rmats_tables", ("r.zip", rmats_zip(), "application/zip"))],
+               data={"count_type": "JC"})
+    assert r.status_code == 422 and "No JC tables" in r.json()["detail"]
+    r = c.post(f"/api/runs/{job_dir.name}/extras/splicing", files=[("rmats_tables", ("r.zip", rmats_zip(), "application/zip"))],
+               data={"fdr_cutoff": "5"})
+    assert r.status_code == 422 and "FDR cutoff must be between" in r.json()["detail"]
+    assert c.post(f"/api/runs/{job_dir.name}/extras/splicing").json()["detail"].startswith("rMATS output tables: no file")
+    assert c.post(f"/api/runs/{job_dir.name}/extras/nope").status_code == 404
     r = c.post(f"/api/runs/{job_dir.name}/extras/isoforms", files={"quant_zip": ("s.zip", salmon_zip(SAMPLES[:4]), "application/zip")})
     assert r.status_code == 422 and "s4, s5" in r.json()["detail"]
     evil = io.BytesIO()
     with zipfile.ZipFile(evil, "w") as z:
         z.writestr("../../escape/SE.MATS.JCEC.txt", "x")
-    r = c.post(f"/api/runs/{job_dir.name}/extras/splicing", files=[("files", ("e.zip", evil.getvalue(), "application/zip"))])
+    r = c.post(f"/api/runs/{job_dir.name}/extras/splicing", files=[("rmats_tables", ("e.zip", evil.getvalue(), "application/zip"))])
     assert r.status_code == 422 and "unsafe path" in r.json()["detail"]
     assert not (job_dir / "extras" / "escape").exists()
-  
+
+
+def test_reference_first_sets_the_note(client):
+    c, job_dir, _ = client
+    r = c.post(f"/api/runs/{job_dir.name}/extras/splicing", files=[("rmats_tables", ("r.zip", rmats_zip(), "application/zip"))],
+               data={"group_1_name": "reference"})
+    assert r.status_code == 200, r.text
+    assert "was WT" in r.json()["note"]
+    cfg = yaml.safe_load(next((job_dir / "extras" / "splicing").glob("*/run_config.yaml")).read_text())
+    assert cfg["group_1_name"] == "WT" and cfg["group_2_name"] == "KO"
+    wait(c, job_dir.name, "splicing")

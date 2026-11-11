@@ -247,4 +247,3 @@ def test_code_zip_has_codebank_settings_and_custom_code(tmp_path, monkeypatch):
         assert info.external_attr >> 16 & 0o111
     with zipfile.ZipFile(code_bundle.build(job, job_dir, run, include_data=True)) as f:
         assert any(n.endswith("/data/counts.csv") for n in f.namelist())
-      

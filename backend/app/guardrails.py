@@ -177,4 +177,3 @@ def describe_for_prompt() -> str:
     not_allowed = "\n".join(f"- {e['name']} ({', '.join((e.get('detect') or [])[:6])}...): use {e.get('instead')}"
                             for e in pol["not_allowed"])
     return f"Allowed methods (the code bank's):\n{allowed}\n\nNot allowed (blocked automatically):\n{not_allowed}"
-  

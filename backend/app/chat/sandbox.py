@@ -139,4 +139,3 @@ def _cut(text: str) -> str:
         return text
     half = MAX_OUTPUT_CHARS // 2
     return text[:half] + f"\n... [{len(text) - MAX_OUTPUT_CHARS} characters cut] ...\n" + text[-half:]
-    

@@ -273,4 +273,3 @@ def _size(n: int) -> str:
             return f"{n:.0f} {unit}"
         n /= 1024
     return f"{n:.0f} TB"
-    

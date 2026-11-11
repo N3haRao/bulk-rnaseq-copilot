@@ -112,6 +112,7 @@ Rscript -e 'if (!requireNamespace("BiocManager", quietly = TRUE)) install.packag
 #     3. run the setup script again; it only installs what is missing.
 # - "MSigDB" / msigdbr download fails: check your internet and run the setup again.
 #   Without it, everything works except pathway analysis.
+# - Still stuck: copy the last 20 lines of the error and send them to me.
 
 
 # -----------------------------------------------------------------------------
@@ -129,13 +130,28 @@ ls data/example                  # should list airway, gse60450, pasilla
 
 # Optional: check that the analysis code works (about 5 minutes):
 Rscript tests/run_tests.R
-# All lines should say [PASS]. If only "enrichment" fails, see the msigdbr note in step 6,
+# All lines should say [PASS] (including "H. plot options"). If only "enrichment" fails, see the msigdbr note in step 6,
 # or run without it:  Rscript tests/run_tests.R --skip_enrichment
 #
 # Optional: the splicing and isoform modules (1-3 minutes each; should end with "0 failed"):
 Rscript splicing/tests/run_splicing_tests.R | tail -3
 Rscript isoforms/tests/run_isoform_tests.R | tail -3
 # (later/tests/run_later_tests.R needs fastp, STAR, Salmon, rMATS: run those on Ada, see docs/ada_setup_commands.sh)
+
+
+# -----------------------------------------------------------------------------
+# STEP 7b. The Anthropic API key for the chat (Ask tab): nothing to type here
+# -----------------------------------------------------------------------------
+# After starting the site (step 8), click "Settings" in the top bar, paste your
+# key from https://console.anthropic.com (Settings -> API keys) and click
+# "Check and save". It is stored in the macOS Keychain.
+# TROUBLESHOOTING
+# - "Anthropic did not accept this key": copy it again (no spaces).
+# - macOS asks whether "python" may use the keychain: click "Always Allow".
+# - The Settings page says the key comes from .env: an older ANTHROPIC_API_KEY line
+#   in ~/projects/bulk-rnaseq-copilot/.env takes precedence; delete that line and
+#   restart ./start.sh to manage the key on the page instead.
+
 
 # -----------------------------------------------------------------------------
 # STEP 8. Start the website
@@ -234,7 +250,7 @@ cd ~/projects/bulk-rnaseq-copilot
 #       Rscript -e 'install.packages("babelgene")'
 # - An example says "Not prepared yet": run step 7.
 # - "Download PDF" says Chromium is not installed (or the first start could not install it):
-#       cd ~/projects/agentic-omics-testbed
+#       cd ~/projects/bulk-rnaseq-copilot
 #       backend/.venv/bin/python -m playwright install chromium
 #   Meanwhile: "Open report", then File -> Print -> Save as PDF.
 # - The report text says "Written from the results by fixed rules": the assistant was not
@@ -262,24 +278,36 @@ cd ~/projects/bulk-rnaseq-copilot && ./start.sh
 
 
 # -----------------------------------------------------------------------------
-# STEP 10. Get the latest version (after changes are pushed)
+# STEP 10. Get the latest version (after I push changes)
 # -----------------------------------------------------------------------------
 cd ~/projects/bulk-rnaseq-copilot
 git pull
 git submodule update --init --recursive
 ./start.sh                       # rebuilds the website automatically if it changed
+# The code bank comes along automatically (it is pinned in the site; the submodule command
+# above switches it to the right version). New R packages may be needed: run step 6 again.
 # TROUBLESHOOTING
 # - "Your local changes would be overwritten": you edited files. Keep a copy of
 #   your changes, then:  git stash  &&  git pull  (and  git stash pop  to restore).
 
 
 # -----------------------------------------------------------------------------
-# STEP 11. Measure the assistant
+# STEP 11. Measure the assistant (send me the result)
 # -----------------------------------------------------------------------------
 # In a NEW Terminal tab (Cmd+T), with Ollama running:
 cd ~/projects/bulk-rnaseq-copilot/backend
 .venv/bin/python -m eval.run_setup_eval --rules     # built-in rules (should be 22/27)
 .venv/bin/python -m eval.run_setup_eval             # qwen3:8b
+# Takes a few minutes. Copy the summary lines it prints (and, if you like, the
+# file it names under eval/results/) and send them to me.
 # TROUBLESHOOTING
 # - "Model not available: ...": Ollama is not running or the model is missing (step 4).
 # - "No such file .venv/bin/python": run ./start.sh once first (step 8).
+
+
+# -----------------------------------------------------------------------------
+# STEP 12. Ada (the BCM cluster)
+# -----------------------------------------------------------------------------
+# Running the site and the FASTQ steps on Ada (containers, SLURM jobs, ssh tunnel):
+#   docs/ada_setup_commands.sh   (step by step, from logging in with ssh)
+#   containers/README.md         (what is inside the images)

@@ -5,6 +5,7 @@ import Run from "./pages/Run";
 import Runs from "./pages/Runs";
 import Settings from "./pages/Settings";
 import Compare from "./pages/Compare";
+import Fastq from "./pages/Fastq";
 import Comparison from "./pages/Comparison";
 
 export default function App() {
@@ -14,6 +15,7 @@ export default function App() {
         <Link to="/" className="brand">RNA-seq Analysis</Link>
         <nav>
           <NavLink to="/" end>New analysis</NavLink>
+          <NavLink to="/fastq">From FASTQ</NavLink>
           <NavLink to="/runs">My analyses</NavLink>
           <NavLink to="/compare">Compare studies</NavLink>
           <NavLink to="/settings">Settings</NavLink>
@@ -23,6 +25,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/datasets/:uploadId" element={<Dataset />} />
+          <Route path="/fastq" element={<Fastq />} />
+          <Route path="/fastq/:jobId" element={<Fastq />} />
           <Route path="/runs" element={<Runs />} />
           <Route path="/runs/:jobId" element={<Run />} />
           <Route path="/compare" element={<Compare />} />

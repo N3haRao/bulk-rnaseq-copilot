@@ -20,6 +20,8 @@ set -euo pipefail
 : "${CONFIG:?Set CONFIG=/path/to/upstream.yaml}"
 COPILOT_DIR=$(readlink -f "${COPILOT_HOME:-${COPILOT_DIR:-$HOME/rnaseq-copilot}}")
 module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true
+# Singularity 3.6+ works in place of Apptainer (e.g. fuji: singularity 3.7)
+if ! command -v apptainer >/dev/null && command -v singularity >/dev/null; then apptainer() { singularity "$@"; }; fi
 APP=$COPILOT_DIR/rnaseq-copilot.sif
 [ -f "$APP" ] || { echo "Missing $APP" >&2; exit 1; }
 CONFIG=$(readlink -f "$CONFIG")

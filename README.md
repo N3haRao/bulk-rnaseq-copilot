@@ -98,6 +98,20 @@ Analyses run in the background, one at a time; files are under `data/jobs/<run>/
 
 **Keeping the site and the code bank in step:** `extras.check_manifest()` lists everything in a code bank's manifest that the site cannot show (an unknown upload handler, form type or page; a setting that is not a module parameter; a tile reading a missing source...). `backend/tests/test_module_contract.py` runs it on the installed code bank, and also adds a made-up module to a temporary code bank to prove it is offered, run and shown without site code. Tests: `test_extras.py` (the real R modules; skipped when R lacks DESeq2, DEXSeq, stageR, tximport or fgsea).
 
+### Start from FASTQ files (on the server)
+
+**From FASTQ** (`/fastq`) runs the code bank's FASTQ pipeline (`codebank/later/`) on raw reads that are already on the server, then hands the counts to the normal setup and analysis:
+
+1. Copy one folder per experiment into `$OMICS_DATA_DIR/incoming/` (`FASTQ_INCOMING_DIR`), for example with rsync. Globus will later deliver to the same folder.
+2. The page pairs the R1 and R2 files into samples, and suggests the groups from the sample names. The setup assistant can do this instead, from a description; it only sets groups, control and batch.
+3. Choose the species. The GENCODE reference is downloaded once to `$OMICS_DATA_DIR/refs` (`REFS_DIR`), and the STAR and Salmon indexes are built on the first run.
+4. Choose the steps: fastp QC and trimming, read length, STAR, Salmon, tximport gene counts, and rMATS.
+5. The page checks the files, design, reference and disk space before starting. It then runs `later/scripts/run_upstream.R` in the background, one job at a time, using `FASTQ_THREADS` threads.
+6. **Set up the analysis** turns the counts into a dataset (setup chat, checks, DESeq2, report).
+7. When that analysis finishes, the **splicing** (the job's rMATS tables for that comparison) and **isoform** (Salmon, DEI/DUI) analyses start on their own in its **More analyses** tab.
+
+Code: `backend/app/fastq.py`, `frontend/src/pages/Fastq.tsx`. Tests: `backend/tests/test_fastq.py`, with a stand-in for the pipeline; the pipeline itself is tested in the code bank.
+
 ### Import from GEO by GSE ID
 
 The start page can import a public dataset straight from GEO: type a GSE accession (e.g. `GSE60450`), click **Look up**, check the samples, pick the counts and click **Import and set up** (`backend/app/geo.py`, `POST /api/geo/inspect` and `/api/geo/import`).

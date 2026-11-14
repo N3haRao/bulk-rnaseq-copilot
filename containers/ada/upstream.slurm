@@ -17,6 +17,9 @@
 #SBATCH --output=rnaseq-upstream-%j.log
 
 set -euo pipefail
+# STAR sorts BAMs through threads x 50 temporary files: the usual soft limit of 1024 open files is too low
+# with 32 threads (STAR exit code 109, "could not open file"). Raise it to the hard limit.
+ulimit -n "$(ulimit -Hn)" 2>/dev/null || ulimit -n 65536 2>/dev/null || true
 : "${CONFIG:?Set CONFIG=/path/to/upstream.yaml}"
 COPILOT_DIR=$(readlink -f "${COPILOT_HOME:-${COPILOT_DIR:-$HOME/rnaseq-copilot}}")
 module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true

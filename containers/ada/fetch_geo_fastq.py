@@ -148,7 +148,7 @@ def plan(gse: str, only: set[str] | None, name_by: str = "design") -> tuple[dict
             if r["library_layout"] == "PAIRED" and not mate:
                 continue
             files["R" + (mate.group(1) if mate else "1")] = {"url": "https://" + u, "md5": m, "bytes": b}
-        s["runs"].append({"run": r["run_accession"], "files": files})
+        s["runs"].append({"run": r["run_accession"], "files": files, "reads": int(r.get("read_count") or 0)})
         s["bytes"] += sum(f["bytes"] for f in files.values())
         s["reads"] += int(r.get("read_count") or 0)
     if name_by == "design":
@@ -212,6 +212,79 @@ def fetch(url: str, dest: Path, want_md5: str, quiet: bool = False, tries: int =
     raise RuntimeError(f"could not download {url} correctly")
 
 
+def sra_tool(name: str) -> str | None:
+    """fasterq-dump / prefetch / pigz from PATH, $SRA_TOOLS_DIR or $COPILOT_HOME/envs/sra/bin."""
+    for d in [os.environ.get("SRA_TOOLS_DIR"), Path(os.environ.get("COPILOT_HOME", Path.home() / "rnaseq-copilot")) / "envs/sra/bin"]:
+        if d and (Path(d) / name).is_file():
+            return str(Path(d) / name)
+    return shutil.which(name)
+
+
+def fetch_ncbi(s: dict, out: Path, tmp: Path, threads: int) -> list[str]:
+    """One sample from NCBI SRA: prefetch + fasterq-dump per run, gzip, join the runs. Checked by read count
+    (NCBI's FASTQ is the same reads as ENA's but not the same .gz bytes, so there is no MD5 to compare)."""
+    prefetch, fqd, pigz = sra_tool("prefetch"), sra_tool("fasterq-dump"), sra_tool("pigz")
+    mates = sorted({m for r in s["runs"] for m in r["files"]})
+    parts: dict[str, list[Path]] = {m: [] for m in mates}
+    for r in s["runs"]:
+        acc, d = r["run"], tmp / r["run"]
+        d.mkdir(parents=True, exist_ok=True)
+        done_flag = d / "ok"
+        if not done_flag.exists():
+            for f in d.glob("*.fastq*"):
+                f.unlink()
+            for i in range(4):
+                rc = subprocess.call([prefetch, acc, "-O", str(d), "--max-size", "500g"])
+                if rc == 0:
+                    break
+                print(f"   {acc}: prefetch failed (exit {rc}); retry {i + 1}/4 in 60 s", flush=True)
+                time.sleep(60)
+            else:
+                raise RuntimeError(f"prefetch {acc} failed")
+            sra = next(d.rglob(f"{acc}.sra*"), None)
+            rc = subprocess.call([fqd, str(sra or acc), "--split-3", "--threads", str(threads), "--skip-technical",
+                                  "-O", str(d), "-t", str(d / "fqd_tmp")])
+            if rc != 0:
+                raise RuntimeError(f"fasterq-dump {acc} failed (exit {rc})")
+            want = r.get("reads") or 0
+            for m in mates:
+                fq = d / (f"{acc}_{m[1]}.fastq" if "R2" in mates else f"{acc}.fastq")
+                if not fq.exists() and m == "R1":
+                    fq = d / f"{acc}_1.fastq"
+                if not fq.exists():
+                    raise RuntimeError(f"fasterq-dump made no {fq.name}")
+                with open(fq, "rb") as fh:
+                    n = sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 24), b"")) // 4
+                if want and n != want:
+                    raise RuntimeError(f"{fq.name}: {n} reads, expected {want}")
+                if pigz:
+                    subprocess.check_call([pigz, "-p", str(threads), "-f", str(fq)])
+                else:
+                    subprocess.check_call(["gzip", "-f", str(fq)])
+            for sra_file in d.rglob("*.sra*"):
+                if sra_file.is_file():
+                    sra_file.unlink()
+            done_flag.write_text("ok")
+        for m in mates:
+            gz = d / (f"{acc}_{m[1]}.fastq.gz" if "R2" in mates else f"{acc}.fastq.gz")
+            if not gz.exists() and m == "R1":
+                gz = d / f"{acc}_1.fastq.gz"
+            parts[m].append(gz)
+    names = []
+    for m in mates:
+        final = out / f"{s['name']}_{m}.fastq.gz"
+        tmpf = final.with_name(final.name + ".part")
+        with open(tmpf, "wb") as w:
+            for p in parts[m]:
+                with open(p, "rb") as r_:
+                    shutil.copyfileobj(r_, w, 1 << 22)
+        tmpf.rename(final)
+        names.append(final.name)
+    for r in s["runs"]:
+        shutil.rmtree(tmp / r["run"], ignore_errors=True)
+    return names
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("gse")
@@ -219,6 +292,9 @@ def main() -> None:
     ap.add_argument("--only", default="", help="comma-separated GSM or SRR/ERR accessions to keep")
     ap.add_argument("--folder", default=None, help="folder name under the incoming folder (default: the GSE)")
     ap.add_argument("--parallel", type=int, default=4, help="files downloaded at the same time (default 4)")
+    ap.add_argument("--source", choices=["ena", "ncbi"], default="ena",
+                    help="ena: FASTQ files from ENA (default). ncbi: NCBI SRA with prefetch + fasterq-dump (sra-tools), "
+                         "for when ENA's download server is unreachable")
     ap.add_argument("--name-by", choices=["design", "title"], default="design",
                     help="file names from the GEO characteristics (default) or the GEO sample titles")
     ap.add_argument("--incoming", default=None, help="default: $FASTQ_INCOMING_DIR or $COPILOT_HOME/data/incoming")
@@ -260,7 +336,28 @@ def main() -> None:
         sys.exit(f"Only {free / 1e9:.0f} GB free in {out}; {total / 1e9:.0f} GB needed.")
     tmp = incoming / f".download_{out.name}"   # hidden from the site while it fills
     tmp.mkdir(parents=True, exist_ok=True)
-    jobs = [(k, s, mate) for k, s in enumerate(samples, 1) for mate in sorted({m for r in s["runs"] for m in r["files"]})
+    if a.source == "ncbi":
+        if not (sra_tool("prefetch") and sra_tool("fasterq-dump")):
+            sys.exit("--source ncbi needs sra-tools (prefetch, fasterq-dump): on PATH, in $SRA_TOOLS_DIR, or in "
+                     "$COPILOT_HOME/envs/sra/bin (see docs/fuji_setup_commands.sh, step 7).")
+        todo = [s for s in samples if any(not (out / f"{s['name']}_{m}.fastq.gz").exists()
+                                          for m in {m for r in s["runs"] for m in r["files"]})]
+        print(f"From NCBI: {len(todo)} samples left ({len(samples) - len(todo)} already here).", flush=True)
+        threads = max(2, (os.cpu_count() or 8) // max(1, a.parallel) // 2)
+        failed = []
+        with concurrent.futures.ThreadPoolExecutor(max(1, a.parallel)) as ex:
+            futs = {ex.submit(fetch_ncbi, s, out, tmp, threads): s for s in todo}
+            for fut in concurrent.futures.as_completed(futs):
+                try:
+                    print(f"   done {', '.join(fut.result())}", flush=True)
+                except Exception as e:  # noqa: BLE001 - report all failures at the end
+                    failed.append(f"{futs[fut]['name']}: {e}")
+        if failed:
+            sys.exit("Some samples did not download:\n  " + "\n  ".join(failed) + "\nRun the same command again.")
+        jobs = []
+    else:
+        jobs = None
+    jobs = jobs if jobs is not None else [(k, s, mate) for k, s in enumerate(samples, 1) for mate in sorted({m for r in s["runs"] for m in r["files"]})
             if not (out / f"{s['name']}_{mate}.fastq.gz").exists()]
     quiet = a.parallel > 1
 

@@ -146,7 +146,7 @@ def step_download(a, state: State) -> None:
     if state["downloaded"]:
         return
     cmd = [sys.executable, str(HERE / "fetch_geo_fastq.py"), a.gse, "--download", "--source", a.source,
-           "--parallel", str(a.parallel), "--folder", a.folder]
+           "--parallel", str(a.parallel), "--folder", a.folder] + (["--bioproject", a.bioproject] if a.bioproject else [])
     for attempt in range(1, 4):
         log(f"1. Download (attempt {attempt}/3): {' '.join(cmd[1:])}")
         if subprocess.call(cmd) == 0:
@@ -344,6 +344,7 @@ def main() -> None:
     ap.add_argument("--threads", type=int, default=32)
     ap.add_argument("--log2fc", type=float, default=None, help="fold-change cutoff for the analyses (log2), e.g. 0.263")
     ap.add_argument("--folder", default=None, help="folder under incoming (default: the GSE)")
+    ap.add_argument("--bioproject", default=None, help="the study's BioProject (PRJNA...) if GEO does not lead to its runs")
     a = ap.parse_args()
     a.gse = a.gse.upper()
     a.folder = a.folder or a.gse

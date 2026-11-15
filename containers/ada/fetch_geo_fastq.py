@@ -86,6 +86,30 @@ def geo_characteristics(gse: str) -> dict:
     return out
 
 
+CONTROL_HINT = re.compile(r"non-?target|control|ctrl|scram|mock|vehicle|untreat|wild|^wt$|^nt$", re.IGNORECASE)
+CATALOG_CODE = re.compile(r"^[A-Z]{0,3}-?\d[\d-]{4,}$")
+
+
+def short_values(values: list[str]) -> dict:
+    """value -> short file-name part. Normally the cleaned value cut to 24 characters; when that would make two
+    different values look the same (long descriptions such as 'SMARTpool: ON-TARGETplus RBM17 siRNA L-005158-01-0005'),
+    the word that only that value has (RBM17; for the control preferably a word like 'Non-targeting')."""
+    distinct = list(dict.fromkeys(values))
+    cut = {v: safe(v)[:24] for v in distinct}
+    if len(set(cut.values())) == len(distinct):
+        return cut
+    toks = {v: re.findall(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*", v) for v in distinct}
+    out = {}
+    for v in distinct:
+        others = {t.lower() for w in distinct if w != v for t in toks[w]}
+        own = [t for t in toks[v] if t.lower() not in others and re.search("[A-Za-z]", t) and not CATALOG_CODE.match(t)]
+        pick = next((t for t in own if CONTROL_HINT.search(t)), own[0] if own else None)
+        out[v] = safe(pick)[:24] if pick else cut[v]
+    if len(set(out.values())) < len(distinct):       # still ambiguous: keep the full cleaned values
+        out = {v: safe(v) for v in distinct}
+    return out
+
+
 def design_names(chars: dict, gsms: list[str]) -> dict:
     """GSM -> name from the characteristics that differ between samples (not per-sample IDs) + a replicate number."""
     fields = []
@@ -95,7 +119,8 @@ def design_names(chars: dict, gsms: list[str]) -> dict:
             fields.append(k)
     if not fields:
         return {}
-    labels = {g: "_".join(safe(chars.get(g, {}).get(k, "NA"))[:24] for k in fields) for g in gsms}
+    parts = {k: short_values([chars.get(g, {}).get(k, "NA") for g in gsms]) for k in fields}
+    labels = {g: "_".join(parts[k][chars.get(g, {}).get(k, "NA")] for k in fields) for g in gsms}
     seen: dict[str, int] = {}
     out = {}
     for g in sorted(gsms):
@@ -133,7 +158,8 @@ def run_gsm(r: dict, gsms: set[str]) -> str | None:
     return m.group(0) if m and m.group(0) in gsms else None
 
 
-def plan(gse: str, only: set[str] | None, name_by: str = "design", bioproject: str | None = None) -> tuple[dict, list[dict]]:
+def plan(gse: str, only: set[str] | None, name_by: str = "design", bioproject: str | None = None,
+         max_runs: int | None = None) -> tuple[dict, list[dict]]:
     geo = geo_samples(gse)
     geo["chars"] = geo_characteristics(gse)
     projects = [bioproject] if bioproject else (sra_bioprojects(gse) or geo["projects"])
@@ -145,6 +171,14 @@ def plan(gse: str, only: set[str] | None, name_by: str = "design", bioproject: s
     for r in runs:
         r["gsm"] = run_gsm(r, gsms) if gsms else r["sample_alias"]
     runs = [r for r in runs if r["gsm"]]               # a BioProject can hold other series too
+    if max_runs:                                        # very deep studies: the first N runs (lanes) of each sample
+        kept: dict[str, int] = {}
+        sel = []
+        for r in sorted(runs, key=lambda x: x["run_accession"]):
+            kept[r["gsm"]] = kept.get(r["gsm"], 0) + 1
+            if kept[r["gsm"]] <= max_runs:
+                sel.append(r)
+        runs = sel
     if only:
         runs = [r for r in runs if r["gsm"] in only or r["run_accession"] in only]
     by: dict[str, dict] = {}
@@ -305,6 +339,8 @@ def main() -> None:
     ap.add_argument("gse")
     ap.add_argument("--download", action="store_true", help="download (default: only list)")
     ap.add_argument("--only", default="", help="comma-separated GSM or SRR/ERR accessions to keep")
+    ap.add_argument("--max-runs", type=int, default=None, help="take only the first N runs (lanes) of each sample: "
+                    "a smaller download for very deeply sequenced studies")
     ap.add_argument("--bioproject", default=None, help="the study's BioProject (PRJNA...) or SRA study (SRP...), "
                     "if GEO does not lead to its runs")
     ap.add_argument("--folder", default=None, help="folder name under the incoming folder (default: the GSE)")
@@ -320,7 +356,7 @@ def main() -> None:
     if not re.fullmatch(r"GSE\d+", gse):
         sys.exit("Give a GEO series number, e.g. GSE314221.")
     only = {x.strip() for x in a.only.split(",") if x.strip()} or None
-    geo, samples = plan(gse, only, a.name_by, a.bioproject)
+    geo, samples = plan(gse, only, a.name_by, a.bioproject, a.max_runs)
     if not samples:
         sys.exit(f"ENA has no FASTQ files for {gse} yet (ENA mirrors new SRA data within a few days), "
                  "or none match --only.")

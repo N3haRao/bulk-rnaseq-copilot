@@ -278,6 +278,20 @@ def _job_dir(job_id: str) -> Path:
     return d
 
 
+def _raise_open_files() -> None:
+    """Run in the pipeline's process before it starts: STAR sorts BAMs through threads x 50 temporary files, more
+    than the usual soft limit of 1024 open files (STAR exit code 109). Raise the soft limit to the hard limit, however
+    the site itself was started."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        want = hard if hard != resource.RLIM_INFINITY else 1048576
+        if soft < want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+    except (ImportError, ValueError, OSError):
+        pass
+
+
 def upstream_command(config: Path) -> list[str]:
     return [settings.rscript, str(settings.codebank_dir / "later" / "scripts" / "run_upstream.R"), "--config", str(config)]
 
@@ -425,7 +439,8 @@ class FastqManager:
         try:
             with open(d / "console.log", "w") as log:
                 proc = subprocess.Popen(upstream_command(d / "upstream.yaml"), stdout=log, stderr=subprocess.STDOUT,
-                                        cwd=settings.codebank_dir, start_new_session=True)
+                                        cwd=settings.codebank_dir, start_new_session=True,
+                                        preexec_fn=_raise_open_files if os.name == "posix" else None)
                 self._procs[job_id] = proc
                 code = proc.wait()
         except FileNotFoundError:

@@ -32,7 +32,7 @@ from pathlib import Path
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 GEO = "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi"
 ENA = "https://www.ebi.ac.uk/ena/portal/api/filereport"
-ENA_FIELDS = "run_accession,sample_alias,sample_title,experiment_title,library_layout,read_count,fastq_ftp,fastq_md5,fastq_bytes"
+ENA_FIELDS = "run_accession,sample_alias,experiment_alias,sample_title,experiment_title,library_layout,read_count,fastq_ftp,fastq_md5,fastq_bytes"
 
 
 def get(url: str, params: dict, tries: int = 4) -> str:
@@ -57,7 +57,10 @@ def geo_samples(gse: str) -> dict:
         sys.exit(f"{gse} was not found in GEO (it may still be private: GEO keeps a series hidden until its paper "
                  "is published or the authors release it).")
     summ = json.loads(get(f"{EUTILS}/esummary.fcgi", {"db": "gds", "id": ids[0], "retmode": "json"}))["result"][ids[0]]
-    out = {"title": summ.get("title", ""), "taxon": summ.get("taxon", ""), "samples": {}}
+    out = {"title": summ.get("title", ""), "taxon": summ.get("taxon", ""), "samples": {},
+           # older series are not found by an SRA search for the GSE: GEO's record names the BioProject / SRA study
+           "projects": [p for p in [summ.get("bioproject")] + [r.get("targetobject") for r in summ.get("extrelations", [])
+                                                                if r.get("relationtype") == "SRA"] if p]}
     for s in summ.get("samples", []):
         out["samples"][s["accession"]] = s.get("title", s["accession"])
     return out
@@ -121,20 +124,32 @@ def safe(name: str) -> str:
     return n or "sample"
 
 
-def plan(gse: str, only: set[str] | None, name_by: str = "design") -> tuple[dict, list[dict]]:
+def run_gsm(r: dict, gsms: set[str]) -> str | None:
+    """The GEO sample of an ENA run: its sample alias, its experiment alias, or a GSM named in its titles."""
+    for k in ("sample_alias", "experiment_alias"):
+        if r.get(k) in gsms:
+            return r[k]
+    m = re.search(r"GSM\d+", " ".join(r.get(k) or "" for k in ("sample_title", "experiment_title")))
+    return m.group(0) if m and m.group(0) in gsms else None
+
+
+def plan(gse: str, only: set[str] | None, name_by: str = "design", bioproject: str | None = None) -> tuple[dict, list[dict]]:
     geo = geo_samples(gse)
     geo["chars"] = geo_characteristics(gse)
-    projects = sra_bioprojects(gse)
+    projects = [bioproject] if bioproject else (sra_bioprojects(gse) or geo["projects"])
     if not projects:
-        sys.exit(f"{gse} has no SRA runs (no raw reads were deposited, or they are not public yet).")
-    runs = [r for p in projects for r in ena_runs(p)]
+        sys.exit(f"{gse} has no SRA runs (no raw reads were deposited, or they are not public yet). If the SRA page "
+                 "shows runs, give its BioProject: --bioproject PRJNA...")
+    runs = [r for p in dict.fromkeys(projects) for r in ena_runs(p)]
     gsms = set(geo["samples"])
-    runs = [r for r in runs if r["sample_alias"] in gsms or not gsms]   # a BioProject can hold other series too
+    for r in runs:
+        r["gsm"] = run_gsm(r, gsms) if gsms else r["sample_alias"]
+    runs = [r for r in runs if r["gsm"]]               # a BioProject can hold other series too
     if only:
-        runs = [r for r in runs if r["sample_alias"] in only or r["run_accession"] in only]
+        runs = [r for r in runs if r["gsm"] in only or r["run_accession"] in only]
     by: dict[str, dict] = {}
     for r in sorted(runs, key=lambda x: x["run_accession"]):
-        gsm = r["sample_alias"]
+        gsm = r["gsm"]
         title = geo["samples"].get(gsm) or r.get("sample_title") or gsm
         s = by.setdefault(gsm, {"gsm": gsm, "title": title, "name": safe(title), "runs": [], "layout": r["library_layout"],
                                 "bytes": 0, "reads": 0})
@@ -290,6 +305,8 @@ def main() -> None:
     ap.add_argument("gse")
     ap.add_argument("--download", action="store_true", help="download (default: only list)")
     ap.add_argument("--only", default="", help="comma-separated GSM or SRR/ERR accessions to keep")
+    ap.add_argument("--bioproject", default=None, help="the study's BioProject (PRJNA...) or SRA study (SRP...), "
+                    "if GEO does not lead to its runs")
     ap.add_argument("--folder", default=None, help="folder name under the incoming folder (default: the GSE)")
     ap.add_argument("--parallel", type=int, default=4, help="files downloaded at the same time (default 4)")
     ap.add_argument("--source", choices=["ena", "ncbi"], default="ena",
@@ -303,7 +320,7 @@ def main() -> None:
     if not re.fullmatch(r"GSE\d+", gse):
         sys.exit("Give a GEO series number, e.g. GSE314221.")
     only = {x.strip() for x in a.only.split(",") if x.strip()} or None
-    geo, samples = plan(gse, only, a.name_by)
+    geo, samples = plan(gse, only, a.name_by, a.bioproject)
     if not samples:
         sys.exit(f"ENA has no FASTQ files for {gse} yet (ENA mirrors new SRA data within a few days), "
                  "or none match --only.")

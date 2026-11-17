@@ -671,8 +671,17 @@ def tool_installed(module: str) -> str | None:
     return None
 
 
+def r_make_names(x: str) -> str:
+    """R's make.names(): the pipeline names its folders with it ("Non-targeting_vs_CHERP" -> "Non.targeting_vs_CHERP")."""
+    y = re.sub(r"[^A-Za-z0-9._]", ".", x)
+    return y if re.match(r"^([A-Za-z]|\.(?![0-9]))", y) else "X" + y
+
+
 def _rmats_tables(res: Path, s: dict) -> list[Path]:
-    cmp = res / "rmats" / f"{s['reference_level']}_vs_{s['test_level']}" / "tables"
+    name = f"{s['reference_level']}_vs_{s['test_level']}"
+    cmp = res / "rmats" / name / "tables"
+    if not cmp.is_dir():
+        cmp = res / "rmats" / r_make_names(name) / "tables"
     if not cmp.is_dir():
         have = ", ".join(p.name for p in (res / "rmats").iterdir()) if (res / "rmats").is_dir() else "none"
         raise FastqError(f"rMATS compared each group with the control; there are no results for "
@@ -729,8 +738,10 @@ def extras_inputs(fq_job_id: str, module: str, run_job: dict) -> dict:
         meta = (_job_dir(fq_job_id) / "samples.tsv")
         samples = sorted({r["sample"] for r in csv.DictReader(open(meta), delimiter="\t")}) if meta.exists() else []
         bams = []
-        for sample in samples or sorted(p.name for p in (res / "star" / "star").iterdir() if p.is_dir()):
-            b = res / "star" / "star" / sample / "Aligned.sortedByCoord.out.bam"
+        for sample in samples or sorted(p.stem for p in (res / "star" / "bams").glob("*.bam")):
+            # U06 moves STAR's BAM to star/bams/<sample>.bam and indexes it; older layouts as fallbacks
+            cands = [res / "star" / "bams" / f"{sample}.bam", res / "star" / "star" / sample / "Aligned.sortedByCoord.out.bam"]
+            b = next((c for c in cands if c.is_file()), cands[0])
             bai = Path(str(b) + ".bai")
             if not b.is_file():
                 raise FastqError(f"No STAR BAM for {sample} in the FASTQ job (the BAMs may have been deleted to save space).")

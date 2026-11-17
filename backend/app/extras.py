@@ -19,6 +19,7 @@ The latest analysis of each module is the one shown; earlier ones are kept.
 import csv
 import gzip
 import json
+import os
 import re
 import secrets
 import shutil
@@ -46,6 +47,20 @@ TILE_STYLES = {"up", "down"}
 RUN_VALUES = {"organism", "dir", "condition", "reference_level", "test_level", "covariates", "metadata_file", "samples"}
 
 Upload = tuple[str, BinaryIO]
+
+
+class ServerFile:
+    """A file already on the server (e.g. a FASTQ job's BAM or the reference GTF), passed to the upload handlers
+    instead of an open upload: it is linked into the analysis folder, never copied (BAMs are tens of GB)."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path).resolve()
+
+    def read(self, *_):                      # only for handlers that must read the content (e.g. a .zip)
+        raise ExtraError(f"{self.path.name} is a server file and cannot be read as an upload.")
+
+    def close(self):
+        pass
 
 
 class ExtraError(ValueError):
@@ -168,6 +183,11 @@ def _safe_extract(zf: zipfile.ZipFile, dest: Path, keep: Callable[[str], bool]) 
 
 
 def _save_upload(src: BinaryIO, dest: Path) -> Path:
+    if isinstance(src, ServerFile):          # a file on the server: link it, never copy
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.unlink(missing_ok=True)
+        dest.symlink_to(src.path)
+        return dest
     limit = settings.max_upload_mb * 1024 * 1024
     written = 0
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -639,8 +659,15 @@ def bundle(d: Path) -> Path:
         raise KeyError("no results")
     target = d / f"{rd.name}.zip"
     if not target.exists() or target.stat().st_mtime < (rd / "run_summary.json").stat().st_mtime:
-        tmp = shutil.make_archive(str(d / (rd.name + "_tmp")), "zip", root_dir=rd.parent, base_dir=rd.name)
-        Path(tmp).replace(target)
+        tmp = d / (rd.name + "_tmp.zip")
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+            for root, dirs, files in os.walk(rd):        # symlinks (linked BAMs, the reference) are not results
+                dirs[:] = [x for x in dirs if not (Path(root) / x).is_symlink()]
+                for f in files:
+                    fp = Path(root) / f
+                    if not fp.is_symlink():
+                        z.write(fp, fp.relative_to(rd.parent))
+        tmp.replace(target)
     return target
 
 

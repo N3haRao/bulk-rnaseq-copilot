@@ -55,7 +55,8 @@ STUB = textwrap.dedent('''
     done("gene_counts")
     if "rmats" in cfg["steps"]:
         for g in sorted(set(cond.values()) - {cfg["control"]}):
-            t = out / "rmats" / f"{cfg['control']}_vs_{g}" / "tables"; t.mkdir(parents=True)
+            import re as _re
+            t = out / "rmats" / _re.sub(r"[^A-Za-z0-9._]", ".", f"{cfg['control']}_vs_{g}") / "tables"; t.mkdir(parents=True)
             t.joinpath("SE.MATS.JCEC.txt").write_text("ID\\tGeneID\\n1\\tg\\n")
             t.joinpath("SE.MATS.JC.txt").write_text("ID\\tGeneID\\n1\\tg\\n")
         done("rmats")
@@ -219,11 +220,11 @@ def test_suppa_and_majiq_from_fastq_results(env, monkeypatch, tmp_path):
     ref = fastq._ref_paths("mouse")
     ref["gff3"].write_text("##gff-version 3\n")
     assert "No STAR BAM" in fastq.extras_available(job["id"], run_job)["majiq"]["why"]
-    res = settings.data_dir / "fastq" / job["id"] / "results" / "star" / "star"
+    res = settings.data_dir / "fastq" / job["id"] / "results" / "star" / "bams"      # where U06 puts them
+    res.mkdir(parents=True, exist_ok=True)
     for s in ["KO_1", "KO_2", "KO_3", "WT_1", "WT_2", "WT_3"]:
-        (res / s).mkdir(parents=True, exist_ok=True)
-        (res / s / "Aligned.sortedByCoord.out.bam").write_text("bam " + s)
-        (res / s / "Aligned.sortedByCoord.out.bam.bai").write_text("bai")
+        (res / f"{s}.bam").write_text("bam " + s)
+        (res / f"{s}.bam.bai").write_text("bai")
     av = fastq.extras_available(job["id"], run_job)
     assert av["majiq"]["available"] and not av["majiq"]["auto"]
 
@@ -248,6 +249,18 @@ def test_suppa_and_majiq_from_fastq_results(env, monkeypatch, tmp_path):
     rd = d / "runs" / "20260101-000000_majiq"
     (rd / "MJ01_validate_majiq" / "bams").mkdir(parents=True)
     (rd / "run_summary.json").write_text("{}")
-    (rd / "MJ01_validate_majiq" / "bams" / "KO_1.bam").symlink_to(res / "KO_1" / "Aligned.sortedByCoord.out.bam")
+    (rd / "MJ01_validate_majiq" / "bams" / "KO_1.bam").symlink_to(res / "KO_1.bam")
     z = zipfile.ZipFile(extras.bundle(d))
     assert any(n.endswith("run_summary.json") for n in z.namelist()) and not any(n.endswith(".bam") for n in z.namelist())
+
+
+def test_group_names_with_hyphens(env):
+    """rMATS folders are named with R's make.names (Non-targeting -> Non.targeting); the hand-off still finds them."""
+    assert fastq.r_make_names("Non-targeting_vs_CHERP") == "Non.targeting_vs_CHERP"
+    assert fastq.r_make_names("1x_vs_2y") == "X1x_vs_2y" and fastq.r_make_names("WT_vs_KO") == "WT_vs_KO"
+    groups = {n: ("Non-targeting" if n.startswith("WT") else "KO") for n in ["KO_1", "KO_2", "KO_3", "WT_1", "WT_2", "WT_3"]}
+    job = fastq.fastq_jobs.start(spec(groups=groups, control="Non-targeting"))
+    assert wait(job["id"])["status"] == "success"
+    run_job = {"settings": {"reference_level": "Non-targeting", "test_level": "KO"}}
+    ins = fastq.extras_inputs(job["id"], "splicing", run_job)
+    assert sorted(n for n, _ in ins["rmats_tables"]) == ["SE.MATS.JC.txt", "SE.MATS.JCEC.txt"]

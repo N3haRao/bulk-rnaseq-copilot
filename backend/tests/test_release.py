@@ -157,6 +157,36 @@ def test_release_that_needs_the_agent(home):
     assert "Live: v0.6.0" in cli.status(home)
 
 
+def test_changelog_request_and_repair_round(home, monkeypatch):
+    """The agent works when the CHANGELOG asks for site changes even though the first checks pass, and gets one
+    repair round when a final check then fails (here: the quick tests fail once, as a too-strict test would)."""
+    cb = home.codebank
+    with open(cb / "CHANGELOG.md", "a") as f:
+        f.write("\n## v0.6.1\n\n- A module change.\n\n### For the copilot\n\n- Offer the new analysis from FASTQ results.\n")
+    sh(cb, "git", "-c", "user.name=alice", "-c", "user.email=a@x", "commit", "-q", "-am", "site request")
+    tag(cb, "v0.6.1")
+    calls = {"tests_quick": 0}
+    real = cli.Workspace.run_check
+
+    def flaky(self, name):
+        if name == "tests_quick":
+            calls["tests_quick"] += 1
+            if calls["tests_quick"] == 2:                      # 1 = first check, 2 = first final check, 3 = after repair
+                return False, "FAILED tests/test_extras.py::test_x - assert {'a', 'b', 'c'} == {'a', 'b'}"
+        return real(self, name)
+    monkeypatch.setattr(cli.Workspace, "run_check", flaky)
+    script = ScriptedLLM([
+        {"thought": "Read the request.", "action": "finish", "summary": "Looked at the FASTQ request; nothing to change yet."},
+        {"thought": "Fix the strict test.", "action": "finish", "summary": "Made test_x check a subset of the modules."},
+    ])
+    lines = []
+    pend = cli.integrate(home, "v0.6.1", llm=script, final_tests="tests_quick", out=lines.append)
+    assert pend["ready"] and pend["agent_used"] and calls["tests_quick"] == 3, (pend, lines)
+    assert any("For the copilot" in x for x in lines) and any("repair round" in x for x in lines)
+    review = (home.staging("v0.6.1") / "RELEASE_REVIEW.md").read_text()
+    assert "Round 1: Looked at the FASTQ request" in review and "Round 2: Made test_x check a subset" in review
+
+
 def test_model_that_stops_is_not_approvable(home):
     add_toy_module(home.codebank)
     pend = cli.integrate(home, "v0.6.1", llm=ScriptedLLM([LLMUnavailable("Ollama is not running")]), final_tests="tests_quick",

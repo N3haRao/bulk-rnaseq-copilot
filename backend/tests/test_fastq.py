@@ -195,3 +195,59 @@ def test_api_flow(env):
         assert z.status_code == 200 and z.headers["content-type"] == "application/zip"
         d = c.post(f"/api/fastq/jobs/{jid}/dataset").json()
         assert d["source"] == "fastq" and "condition" in d["metadata_preview"]["columns"]
+
+
+def test_suppa_and_majiq_from_fastq_results(env, monkeypatch, tmp_path):
+    """SUPPA2 and MAJIQ use the FASTQ job's results: only when installed; the GTF, GFF3 and BAMs are linked, not
+    copied; MAJIQ gets <sample>.bam + .bai; MAJIQ is offered but never started by itself."""
+    from app import extras
+    job = fastq.fastq_jobs.start(spec())
+    assert wait(job["id"])["status"] == "success"
+    rec = fastq.fastq_jobs.to_dataset(job["id"])
+    run_job = {"upload_id": rec["id"], "settings": {"reference_level": "WT", "test_level": "KO"}}
+    home = tmp_path / "copilot_home"
+    monkeypatch.setenv("COPILOT_HOME", str(home))
+    av = fastq.extras_available(job["id"], run_job)
+    assert not av["suppa"]["available"] and "not installed" in av["suppa"]["why"]
+    assert not av["majiq"]["available"] and "not installed" in av["majiq"]["why"]
+    for f in ("envs/suppa/bin/suppa.py", "envs/majiq/bin/majiq", "majiq_license_academic.lic"):
+        (home / f).parent.mkdir(parents=True, exist_ok=True)
+        (home / f).write_text("x")
+    av = fastq.extras_available(job["id"], run_job)
+    assert av["suppa"]["available"] and av["suppa"]["auto"], av["suppa"]
+    assert not av["majiq"]["available"] and "GFF3" in av["majiq"]["why"]            # no GFF3 in the reference yet
+    ref = fastq._ref_paths("mouse")
+    ref["gff3"].write_text("##gff-version 3\n")
+    assert "No STAR BAM" in fastq.extras_available(job["id"], run_job)["majiq"]["why"]
+    res = settings.data_dir / "fastq" / job["id"] / "results" / "star" / "star"
+    for s in ["KO_1", "KO_2", "KO_3", "WT_1", "WT_2", "WT_3"]:
+        (res / s).mkdir(parents=True, exist_ok=True)
+        (res / s / "Aligned.sortedByCoord.out.bam").write_text("bam " + s)
+        (res / s / "Aligned.sortedByCoord.out.bam.bai").write_text("bai")
+    av = fastq.extras_available(job["id"], run_job)
+    assert av["majiq"]["available"] and not av["majiq"]["auto"]
+
+    ins = fastq.extras_inputs(job["id"], "suppa", run_job)
+    assert set(ins) == {"quant_zip", "gtf", "rmats_tables"}
+    assert isinstance(ins["gtf"][0][1], extras.ServerFile) and ins["gtf"][0][1].path == ref["gtf"].resolve()
+    ins = fastq.extras_inputs(job["id"], "majiq", run_job)
+    names = [n for n, _ in ins["bams"]]
+    assert "KO_1.bam" in names and "KO_1.bam.bai" in names and len(names) == 12
+    assert all(isinstance(fh, extras.ServerFile) for _, fh in ins["bams"] + ins["gff3"])
+
+    # the upload handlers link server files instead of copying them
+    folder = tmp_path / "extra" / "bams"
+    out = extras._h_files({"name": "bams", "sets": "bam_dir", "keep": r"\.(bam|bai)$", "require": r"\.bam$"}, ins["bams"], folder, {})
+    assert out == {"bam_dir": str(folder)}
+    assert (folder / "KO_1.bam").is_symlink() and (folder / "KO_1.bam").read_text() == "bam KO_1"
+    g = extras._h_file({"name": "gff3", "sets": "gff3_file", "accept": [".gff3", ".gz"]}, ins["gff3"], tmp_path / "extra", {})
+    assert Path(g["gff3_file"]).is_symlink()
+
+    # the code .zip of an analysis leaves out linked files
+    d = tmp_path / "extra_run"
+    rd = d / "runs" / "20260101-000000_majiq"
+    (rd / "MJ01_validate_majiq" / "bams").mkdir(parents=True)
+    (rd / "run_summary.json").write_text("{}")
+    (rd / "MJ01_validate_majiq" / "bams" / "KO_1.bam").symlink_to(res / "KO_1" / "Aligned.sortedByCoord.out.bam")
+    z = zipfile.ZipFile(extras.bundle(d))
+    assert any(n.endswith("run_summary.json") for n in z.namelist()) and not any(n.endswith(".bam") for n in z.namelist())

@@ -239,3 +239,12 @@ input[type="color"] { width: 44px; height: 28px; padding: 0 2px; border: 1px sol
 .fastq .progress > div { height: 100%; background: var(--accent); transition: width 0.4s; }
 .badge.note, .badge.waiting { background: var(--surface-2); color: var(--muted); }
 .badge.stopped { background: var(--fail-soft); color: var(--fail); }
+.server-picker { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: -6px 0 14px; background: var(--surface-2); }
+.server-list { max-height: 320px; overflow-y: auto; background: var(--surface); }
+.server-list td { padding: 4px 8px; }
+.picks { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 14px; }
+.pick { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; padding: 3px 8px; border-radius: 6px;
+  background: var(--surface-2); border: 1px solid var(--border); font-family: ui-monospace, monospace; word-break: break-all; }
+.field-pick { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.field-pick label.field { margin-bottom: 0; }
+.field-help { display: block; color: var(--muted); margin: 3px 0 14px; }

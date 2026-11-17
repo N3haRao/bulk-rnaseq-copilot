@@ -94,7 +94,9 @@ Every code-bank module whose manifest entry says `site: {attach_to: run}` is off
 - **Alternative splicing:** upload the rMATS output tables (or a .zip of rMATS's output folder) and say which group was rMATS sample 1. The `splicing/` module finds the significant events (FDR, ΔPSI, read coverage), makes the figures, tests pathways, and sorts genes into splicing only / expression only / both by comparing with this run's gene-level results.
 - **Transcript isoforms:** upload a .zip of Salmon output folders (`<sample>/quant.sf`, named like the run's samples), plus the GTF unless the transcript names include the gene (GENCODE). The `isoforms/` module runs **DEI** (DESeq2 per transcript, with this run's settings) and **DUI** (DEXSeq + stageR; isoform switches).
 
-Analyses run in the background, one at a time; files are under `data/jobs/<run>/extras/`. API: `GET /api/runs/<id>/extras` (forms and latest results), `POST /api/runs/<id>/extras/<module>` (multipart: one file field per manifest input, plus the settings).
+**Files already on the server:** every input also has **Choose on the server**, a file browser limited to fixed folders: `data/incoming` (`FASTQ_INCOMING_DIR`), the Start-from-FASTQ jobs (`data/fastq`), the references (`REFS_DIR`), and any folders listed in `SERVER_FILE_ROOTS` (`"Lab projects=/mnt/lab/projects;Everest=/data/everest"`). Choose one file, several files, or a folder: for the rMATS tables or BAMs, a folder stands for the matching files in it (up to two levels down, e.g. `rmats/<comparison>`); for Salmon output, the folder holding one folder per sample. Chosen files are linked into the analysis, not copied. Choices are checked again on the server: nothing outside those folders (symlinks included) or hidden can be read (`backend/app/server_files.py`, `GET /api/server-files`).
+
+Analyses run in the background, one at a time; files are under `data/jobs/<run>/extras/`. API: `GET /api/runs/<id>/extras` (forms and latest results), `POST /api/runs/<id>/extras/<module>` (multipart: one file field per manifest input, plus the settings; a field `server:<input>` = `<root>:<path>` per server choice).
 
 **Keeping the site and the code bank in step:** `extras.check_manifest()` lists everything in a code bank's manifest that the site cannot show (an unknown upload handler, form type or page; a setting that is not a module parameter; a tile reading a missing source...). `backend/tests/test_module_contract.py` runs it on the installed code bank, and also adds a made-up module to a temporary code bank to prove it is offered, run and shown without site code. Tests: `test_extras.py` (the real R modules; skipped when R lacks DESeq2, DEXSeq, stageR, tximport or fgsea).
 
@@ -178,7 +180,7 @@ cd backend && .venv/bin/pytest
 cd frontend && npm run typecheck
 ```
 
-Settings (environment variables): `CODEBANK_DIR` (default `./codebank`), `OMICS_DATA_DIR` (default `./data`), `RSCRIPT`, `MAX_UPLOAD_MB` (default 300).
+Settings (environment variables): `CODEBANK_DIR` (default `./codebank`), `OMICS_DATA_DIR` (default `./data`), `RSCRIPT`, `MAX_UPLOAD_MB` (default 300), `SERVER_FILE_ROOTS` (extra folders the input browser may show; see More analyses).
 
 ## Layout
 

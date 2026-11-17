@@ -48,11 +48,14 @@ REFERENCES = {
     "mouse": {"label": "Mouse · GRCm39 · GENCODE M33", "organism": "mouse",
               "files": {"genome_fasta": f"{GENCODE}/Gencode_mouse/release_M33/GRCm39.primary_assembly.genome.fa.gz",
                         "gtf": f"{GENCODE}/Gencode_mouse/release_M33/gencode.vM33.primary_assembly.annotation.gtf.gz",
-                        "transcripts_fasta": f"{GENCODE}/Gencode_mouse/release_M33/gencode.vM33.transcripts.fa.gz"}},
+                        "transcripts_fasta": f"{GENCODE}/Gencode_mouse/release_M33/gencode.vM33.transcripts.fa.gz"},
+              # optional, kept gzipped: MAJIQ reads the annotation as GFF3 (same release as the GTF)
+              "optional": {"gff3": f"{GENCODE}/Gencode_mouse/release_M33/gencode.vM33.primary_assembly.annotation.gff3.gz"}},
     "human": {"label": "Human · GRCh38 · GENCODE 44", "organism": "human",
               "files": {"genome_fasta": f"{GENCODE}/Gencode_human/release_44/GRCh38.primary_assembly.genome.fa.gz",
                         "gtf": f"{GENCODE}/Gencode_human/release_44/gencode.v44.primary_assembly.annotation.gtf.gz",
-                        "transcripts_fasta": f"{GENCODE}/Gencode_human/release_44/gencode.v44.transcripts.fa.gz"}},
+                        "transcripts_fasta": f"{GENCODE}/Gencode_human/release_44/gencode.v44.transcripts.fa.gz"},
+              "optional": {"gff3": f"{GENCODE}/Gencode_human/release_44/gencode.v44.primary_assembly.annotation.gff3.gz"}},
 }
 FINAL = {"success", "failed", "cancelled", "interrupted"}
 
@@ -204,7 +207,8 @@ def assist(folder_name: str, description: str, llm=None) -> dict:
 def _ref_paths(species: str) -> dict:
     d = refs_dir() / species
     files = {k: d / Path(url).name[:-3] for k, url in REFERENCES[species]["files"].items()}   # without .gz
-    return {**files, "star_index": d / "star_index", "salmon_index": d / "salmon_index", "dir": d}
+    optional = {k: d / Path(url).name for k, url in (REFERENCES[species].get("optional") or {}).items()}   # kept .gz
+    return {**files, **optional, "star_index": d / "star_index", "salmon_index": d / "salmon_index", "dir": d}
 
 
 def reference_status(species: str) -> dict:
@@ -218,6 +222,7 @@ def reference_status(species: str) -> dict:
         st = json.loads(sf.read_text())
     return {"species": species, "label": REFERENCES[species]["label"], "files_ready": all(have.values()), "files": have,
             "star_index": (p["star_index"] / "SA").exists(), "salmon_index": (p["salmon_index"] / "info.json").exists(),
+            "gff3": p["gff3"].is_file() if "gff3" in p else False,
             "download": st, "dir": str(p["dir"])}
 
 
@@ -231,7 +236,7 @@ _dl_lock = threading.Lock()
 def download_reference(species: str) -> dict:
     """Download and unpack the GENCODE files in the background (once per species)."""
     st = reference_status(species)
-    if st["files_ready"]:
+    if st["files_ready"] and (st["gff3"] or "gff3" not in (REFERENCES[species].get("optional") or {})):
         return st
     with _dl_lock:
         if (st.get("download") or {}).get("status") == "running":
@@ -263,7 +268,24 @@ def _download(species: str) -> None:
                 shutil.copyfileobj(src, out, 16 << 20)
             tmp.replace(dest)
             gz.unlink(missing_ok=True)
-        sf.write_text(json.dumps({"status": "done", "finished": _now()}))
+        note = None
+        for key, url in (REFERENCES[species].get("optional") or {}).items():
+            dest = p[key]
+            if dest.is_file():
+                continue
+            part = dest.with_name(dest.name + ".part")
+            sf.write_text(json.dumps({"status": "running", "file": Path(url).name, "started": _now()}))
+            try:
+                with httpx.stream("GET", url, follow_redirects=True, timeout=120) as r:
+                    r.raise_for_status()
+                    with open(part, "wb") as f:
+                        for chunk in r.iter_bytes(4 << 20):
+                            f.write(chunk)
+                part.replace(dest)
+            except Exception as e:  # noqa: BLE001 - only MAJIQ needs it; the reference is usable without
+                part.unlink(missing_ok=True)
+                note = f"{Path(url).name} (for MAJIQ) could not be downloaded: {type(e).__name__}: {e}"
+        sf.write_text(json.dumps({"status": "done", "finished": _now(), **({"note": note} if note else {})}))
     except Exception as e:  # noqa: BLE001 - shown on the page
         sf.write_text(json.dumps({"status": "failed", "error": f"{type(e).__name__}: {e}", "finished": _now()}))
 
@@ -628,44 +650,107 @@ def source_for_run(job: dict) -> dict | None:
     return fq
 
 
+# Optional analyses the FASTQ results can feed, and which of them start by themselves after the analysis.
+# MAJIQ runs for hours under an academic licence: offered, never started automatically.
+FASTQ_EXTRAS = ("splicing", "isoforms", "suppa", "majiq")
+AUTO_START = ("splicing", "isoforms", "suppa")
+
+
+def tool_installed(module: str) -> str | None:
+    """None when the module's software is on this server, else why not (SUPPA2 / MAJIQ live in $COPILOT_HOME/envs)."""
+    home = Path(os.environ.get("COPILOT_HOME") or settings.data_dir.parent)
+    if module == "suppa":
+        if (home / "envs" / "suppa" / "bin" / "suppa.py").exists() or shutil.which("suppa.py") or os.environ.get("SUPPA_COMMAND"):
+            return None
+        return "SUPPA2 is not installed on this server (code bank: suppa/install/install_suppa.sh)."
+    if module == "majiq":
+        if not ((home / "envs" / "majiq" / "bin" / "majiq").exists() or shutil.which("majiq")):
+            return "MAJIQ is not installed on this server (code bank: majiq/install/install_majiq.sh, academic licence)."
+        if not (list(home.glob("majiq_license*")) or os.environ.get("MAJIQ_LICENSE_FILE")):
+            return f"No MAJIQ licence file in {home} (majiq_license*.lic)."
+    return None
+
+
+def _rmats_tables(res: Path, s: dict) -> list[Path]:
+    cmp = res / "rmats" / f"{s['reference_level']}_vs_{s['test_level']}" / "tables"
+    if not cmp.is_dir():
+        have = ", ".join(p.name for p in (res / "rmats").iterdir()) if (res / "rmats").is_dir() else "none"
+        raise FastqError(f"rMATS compared each group with the control; there are no results for "
+                         f"{s['reference_level']} vs {s['test_level']} (available: {have}).")
+    files = sorted(p for p in cmp.iterdir() if re.match(r"^(SE|MXE|A3SS|A5SS|RI)\.MATS\.(JC|JCEC)\.txt$", p.name))
+    if not files:
+        raise FastqError(f"No rMATS tables in {cmp}.")
+    return files
+
+
+def _salmon_zip(res: Path) -> io.BytesIO:
+    quants = sorted((res / "salmon").glob("*/quant.sf"))
+    if not quants:
+        raise FastqError("No Salmon results in the FASTQ job.")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for q in quants:
+            z.write(q, f"{q.parent.name}/quant.sf")
+    buf.seek(0)
+    return buf
+
+
 def extras_inputs(fq_job_id: str, module: str, run_job: dict) -> dict:
-    """Server-side files for an optional analysis, in the shape the upload handlers take: {input name: [(name, fh)]}."""
+    """Server-side files for an optional analysis, in the shape the upload handlers take: {input name: [(name, fh)]}.
+    Large files already on the server (BAMs, the reference annotation) are passed as ServerFile: linked, not copied."""
+    from .extras import ServerFile
     res = _job_dir(fq_job_id) / "results"
     s = run_job["settings"]
     if module == "splicing":
-        cmp = res / "rmats" / f"{s['reference_level']}_vs_{s['test_level']}" / "tables"
-        if not cmp.is_dir():
-            have = ", ".join(p.name for p in (res / "rmats").iterdir()) if (res / "rmats").is_dir() else "none"
-            raise FastqError(f"rMATS compared each group with the control; there are no results for "
-                             f"{s['reference_level']} vs {s['test_level']} (available: {have}).")
-        files = sorted(p for p in cmp.iterdir() if re.match(r"^(SE|MXE|A3SS|A5SS|RI)\.MATS\.(JC|JCEC)\.txt$", p.name))
-        if not files:
-            raise FastqError(f"No rMATS tables in {cmp}.")
-        return {"rmats_tables": [(p.name, open(p, "rb")) for p in files]}
+        return {"rmats_tables": [(p.name, open(p, "rb")) for p in _rmats_tables(res, s)]}
     if module == "isoforms":
-        sal = res / "salmon"
-        quants = sorted(sal.glob("*/quant.sf"))
-        if not quants:
-            raise FastqError("No Salmon results in the FASTQ job.")
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            for q in quants:
-                z.write(q, f"{q.parent.name}/quant.sf")
-        buf.seek(0)
-        return {"quant_zip": [("salmon.zip", buf)]}
+        return {"quant_zip": [("salmon.zip", _salmon_zip(res))]}
+    if module in ("suppa", "majiq"):
+        why = tool_installed(module)
+        if why:
+            raise FastqError(why)
+        species = fastq_jobs.load(fq_job_id).get("species")
+        if species not in REFERENCES:
+            raise FastqError("The FASTQ job does not say which reference it used.")
+        ref = _ref_paths(species)
+    if module == "suppa":
+        if not ref["gtf"].is_file():
+            raise FastqError(f"The reference annotation is missing: {ref['gtf']}.")
+        out = {"quant_zip": [("salmon.zip", _salmon_zip(res))], "gtf": [(ref["gtf"].name, ServerFile(ref["gtf"]))]}
+        try:
+            out["rmats_tables"] = [(p.name, open(p, "rb")) for p in _rmats_tables(res, s)]   # optional: SUPPA2 vs rMATS
+        except FastqError:
+            pass
+        return out
+    if module == "majiq":
+        if not ref["gff3"].is_file():
+            raise FastqError(f"MAJIQ needs the annotation as GFF3: put {ref['gff3'].name} in {ref['dir']} "
+                             f"({REFERENCES[species]['optional']['gff3']}).")
+        meta = (_job_dir(fq_job_id) / "samples.tsv")
+        samples = sorted({r["sample"] for r in csv.DictReader(open(meta), delimiter="\t")}) if meta.exists() else []
+        bams = []
+        for sample in samples or sorted(p.name for p in (res / "star" / "star").iterdir() if p.is_dir()):
+            b = res / "star" / "star" / sample / "Aligned.sortedByCoord.out.bam"
+            bai = Path(str(b) + ".bai")
+            if not b.is_file():
+                raise FastqError(f"No STAR BAM for {sample} in the FASTQ job (the BAMs may have been deleted to save space).")
+            if not bai.is_file():
+                raise FastqError(f"No BAM index for {sample} ({bai.name}).")
+            bams += [(f"{sample}.bam", ServerFile(b)), (f"{sample}.bam.bai", ServerFile(bai))]
+        return {"bams": bams, "gff3": [(ref["gff3"].name, ServerFile(ref["gff3"]))]}
     raise FastqError(f"The FASTQ results do not feed the '{module}' analysis.")
 
 
 def extras_available(fq_job_id: str, run_job: dict) -> dict:
     out = {}
-    for m in ("splicing", "isoforms"):
+    for m in FASTQ_EXTRAS:
         try:
             ins = extras_inputs(fq_job_id, m, run_job)
             for lst in ins.values():
                 for _, fh in lst:
                     fh.close()
-            out[m] = {"available": True}
-        except (FastqError, KeyError) as e:
+            out[m] = {"available": True, "auto": m in AUTO_START}
+        except (FastqError, KeyError, OSError) as e:
             out[m] = {"available": False, "why": str(e)}
     return out
 

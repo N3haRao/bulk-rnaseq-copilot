@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { api, extraFileUrl, type ExtraAnalysis, type ExtraColumn, type ExtraForm, type FromFastq, type Job } from "../api";
 import { Badge, Markdown, Notice } from "./common";
+import ServerPicker, { pickLabel } from "./ServerPicker";
 import { fmtNum, fmtP } from "../format";
 
 // Every optional analysis here is drawn from the code bank's manifest (modules.<name>.site): its card,
@@ -86,13 +87,17 @@ function ModuleCard({ job, form, a, onStarted, fastq }: { job: Job; form: ExtraF
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const missing = form.inputs.some((i) => i.required && !(files[i.name]?.length));
+  const [picks, setPicks] = useState<Record<string, string[]>>({});
+  const [picking, setPicking] = useState<string | null>(null);
+  const missing = form.inputs.some((i) => i.required && !(files[i.name]?.length) && !(picks[i.name]?.length));
+  const anyUpload = Object.values(files).some((f) => f.length);
 
   async function submit(ev: FormEvent) {
     ev.preventDefault();
     setBusy(true); setErr(null);
     try {
-      onStarted(await api.startExtra(job.id, form.module, files, values));
+      onStarted(await api.startExtra(job.id, form.module, files, values, picks));
+      setPicks({});
       setShowForm(false);
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   }
@@ -116,18 +121,40 @@ function ModuleCard({ job, form, a, onStarted, fastq }: { job: Job; form: ExtraF
       {(!a || showForm) && !running && fastq && (
         fastq.available
           ? <p><button type="button" onClick={fromFastq} disabled={busy}>{busy ? <><span className="spinner" /> Starting…</> : "Run with the FASTQ results"}</button>
-            <span className="muted small"> default settings; or upload files and change settings below</span></p>
+            <span className="muted small"> default settings; or upload files, choose them on the server, and change settings below</span></p>
           : <p className="muted small">The FASTQ results cannot be used here: {fastq.why}</p>
       )}
       {(!a || showForm) && !running && (
         <form onSubmit={submit}>
           {form.inputs.map((i) => (
-            <label className="field" key={i.name}>
-              <span>{i.label ?? i.name}</span>
-              <input type="file" multiple={!!i.multiple} accept={(i.accept ?? []).join(",")}
-                onChange={(e) => setFiles((cur) => ({ ...cur, [i.name]: Array.from(e.target.files ?? []) }))} />
-              {i.help && <small>{i.help}</small>}
-            </label>
+            <div key={i.name}>
+              <div className="field-pick">
+                <label className="field">
+                  <span>{i.label ?? i.name}</span>
+                  <input type="file" multiple={!!i.multiple} accept={(i.accept ?? []).join(",")}
+                    onChange={(e) => setFiles((cur) => ({ ...cur, [i.name]: Array.from(e.target.files ?? []) }))} />
+                </label>
+                <button type="button" className="secondary" onClick={() => setPicking(picking === i.name ? null : i.name)}>
+                  {picking === i.name ? "Hide server files" : "Choose on the server"}</button>
+              </div>
+              {i.help && <small className="field-help">{i.help}</small>}
+              {!!picks[i.name]?.length && (
+                <div className="picks">
+                  {picks[i.name].map((t) => (
+                    <span className="pick" key={t} title={t}>{pickLabel(t)}
+                      <button type="button" className="link" aria-label="remove"
+                        onClick={() => setPicks((cur) => ({ ...cur, [i.name]: cur[i.name].filter((x) => x !== t) }))}>×</button></span>
+                  ))}
+                </div>
+              )}
+              {picking === i.name && (
+                <ServerPicker mode={i.pick ?? "file"} accept={i.accept ?? []} onClose={() => setPicking(null)}
+                  onPick={(ts) => {
+                    setPicks((cur) => ({ ...cur, [i.name]: i.pick === "files" ? [...new Set([...(cur[i.name] ?? []), ...ts])] : ts }));
+                    setPicking(null);
+                  }} />
+              )}
+            </div>
           ))}
           {form.form.length > 0 && (
             <div className="grid-2">
@@ -142,7 +169,7 @@ function ModuleCard({ job, form, a, onStarted, fastq }: { job: Job; form: ExtraF
           )}
           {err && <Notice kind="fail">{err}</Notice>}
           <div className="row">
-            <button type="submit" disabled={busy || missing}>{busy ? <><span className="spinner" /> Uploading…</> : `Run ${form.title.toLowerCase()}`}</button>
+            <button type="submit" disabled={busy || missing}>{busy ? <><span className="spinner" /> {anyUpload ? "Uploading…" : "Starting…"}</> : `Run ${form.title.toLowerCase()}`}</button>
             {a && <button type="button" className="link" onClick={() => setShowForm(false)}>Cancel</button>}
           </div>
         </form>

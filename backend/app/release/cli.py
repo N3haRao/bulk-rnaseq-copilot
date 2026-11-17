@@ -135,29 +135,52 @@ def integrate(p: Paths, tag: str, agent_mode: str = "auto", llm=None, final_test
         out(f"  check {c}: {'passed' if ok else 'FAILED'}")
 
     agent_res = None
-    need = not all(v["ok"] for v in first.values())
-    if agent_mode == "always" or (agent_mode == "auto" and need):
+    # The agent works when a first check fails, or when the code bank's changelog asks for site changes
+    # ("For the copilot" section); and gets one repair round if the final checks fail after that.
+    site_requests = bool(re.search(r"^#+\s*for the (copilot|site)\b", changelog, re.I | re.M))
+    need = not all(v["ok"] for v in first.values()) or site_requests
+    summaries = []
+
+    def run_agent(task: str):
+        nonlocal llm
         if llm is None:
             from ..llm.ollama import OllamaClient
             llm = OllamaClient(model=os.environ.get("RELEASE_AGENT_MODEL", "qwen3-coder:30b"),
                                url=os.environ.get("OLLAMA_URL", "http://localhost:11434"),
                                timeout=float(os.environ.get("RELEASE_AGENT_TIMEOUT", "1200")),
                                num_ctx=int(os.environ.get("RELEASE_AGENT_CONTEXT", "32768")))
-        task = _task(tag, info, prev, changelog, manifest_diff, files_changed, first)
         out(f"  release agent ({getattr(llm, 'name', 'model')}) working in {site} ...")
-        agent_res = ReleaseAgent(llm, ws, max_steps=max_steps, log=sdir / "agent_log.jsonl").run(task)
-        out(f"  agent {'finished' if agent_res.finished else 'stopped: ' + (agent_res.stopped_because or '')}; "
-            f"files changed: {', '.join(agent_res.changed) or 'none'}")
+        res = ReleaseAgent(llm, ws, max_steps=max_steps, log=sdir / "agent_log.jsonl").run(task)
+        out(f"  agent {'finished' if res.finished else 'stopped: ' + (res.stopped_because or '')}; "
+            f"files changed: {', '.join(res.changed) or 'none'}")
+        if res.summary:
+            summaries.append(res.summary)
+        return res
+
+    if agent_mode == "always" or (agent_mode == "auto" and need):
+        if site_requests and all(v["ok"] for v in first.values()):
+            out("  the CHANGELOG asks for site changes (For the copilot): the release agent works on them")
+        agent_res = run_agent(_task(tag, info, prev, changelog, manifest_diff, files_changed, first))
 
     # final checks, always by this command (never taken from the agent's word)
-    final = {}
-    plan = ["manifest", final_tests or os.environ.get("RELEASE_FINAL_TESTS", "tests_full")]
-    if any(f.startswith("frontend/") for f in ws.changed):
-        plan.append("frontend")
-    for c in plan:
-        ok, txt = ws.run_check(c)
-        final[c] = {"ok": ok, "output": txt[-6000:]}
-        out(f"  final check {c}: {'passed' if ok else 'FAILED'}")
+    def final_checks() -> dict:
+        res = {}
+        plan = ["manifest", final_tests or os.environ.get("RELEASE_FINAL_TESTS", "tests_full")]
+        if any(f.startswith("frontend/") for f in ws.changed):
+            plan.append("frontend")
+        for c in plan:
+            ok, txt = ws.run_check(c)
+            res[c] = {"ok": ok, "output": txt[-6000:]}
+            out(f"  final check {c}: {'passed' if ok else 'FAILED'}")
+        return res
+
+    final = final_checks()
+    if not all(v["ok"] for v in final.values()) and agent_mode != "never":
+        out("  a final check failed: one repair round for the release agent")
+        agent_res = run_agent(_repair_task(tag, changelog, final))
+        final = final_checks()
+    if agent_res is not None and len(summaries) > 1:
+        agent_res.summary = "\n\n".join(f"Round {i + 1}: {t}" for i, t in enumerate(summaries))
     ready = all(v["ok"] for v in final.values())
 
     (site / "CODEBANK_RELEASE").write_text(f"{tag} {info['commit']}\n")
@@ -203,6 +226,23 @@ def _task(tag, info, prev, changelog, manifest_diff, files_changed, first) -> st
 
 Make the site work with this release (staging copy; a person reviews your changes). Use read_codebank to read the
 new code bank (e.g. manifest/tools.yaml, docs/ADDING_A_MODULE.md, CHANGELOG.md)."""
+
+
+def _repair_task(tag, changelog, final) -> str:
+    fails = "\n\n".join(f"### {k}: FAILED\n{v['output'][-6000:]}" for k, v in final.items() if not v["ok"])
+    return f"""# Code bank release {tag}: a final check failed
+
+The release command ran its final checks on the staging site and these failed:
+
+{fails}
+
+Find the cause and fix the site (staging copy; a person reviews your changes). If a site test assumes something this
+release legitimately changes (for example an exact list of modules), update the test so it checks what it means to
+check, and say so in your summary; never delete a test or weaken what it protects. Run the failing check again before
+you finish.
+
+## CHANGELOG entry
+{changelog}"""
 
 
 def _review(pending, info, prev, changelog, first, final, agent_res, diffstat, diff) -> str:

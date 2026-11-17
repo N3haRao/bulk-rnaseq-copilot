@@ -54,8 +54,11 @@ The release job:
 3. Runs two checks against the new code bank:
    - `manifest`: the site can show every module's `site:` block;
    - `tests_quick`: the contract test plus the unit tests.
-4. Only if a check fails, starts the release agent: `qwen3-coder:30b` through Ollama, set with `RELEASE_AGENT_MODEL`. Its limits are below.
+4. Starts the release agent (`qwen3-coder:30b` through Ollama, set with `RELEASE_AGENT_MODEL`; limits below) when a check fails,
+   or when the release's CHANGELOG entry has a `### For the copilot` section asking for site changes. `--agent always` /
+   `--agent never` override this.
 5. Runs the final checks itself, whatever the agent says: `manifest` and the full test suite (`RELEASE_FINAL_TESTS`, default `tests_full`). If the agent changed the frontend, a type check and build are added.
+   If a final check fails, the agent gets one repair round with the failing output, and the final checks run again.
 6. Commits the staging copy and writes `RELEASE_REVIEW.md`.
 
 The release agent:

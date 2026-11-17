@@ -111,7 +111,8 @@ def form_spec(module: str, job: dict) -> dict:
             field["options"] = [{"value": "test", "label": f"{words['test']} (test group)"},
                                 {"value": "reference", "label": f"{words['reference']} (reference group)"}]
         fields.append(field)
-    inputs = [{k: v for k, v in i.items() if k in ("name", "label", "accept", "multiple", "required", "help")}
+    inputs = [{**{k: v for k, v in i.items() if k in ("name", "label", "accept", "multiple", "required", "help")},
+               "pick": PICK_MODES.get(i.get("handler"), "file")}
               for i in site.get("inputs") or []]
     return {"module": module, "title": site.get("title", module), "description": _fill(" ".join(str(site.get("description", "")).split()), words),
             "inputs": inputs, "form": fields}
@@ -246,9 +247,26 @@ def _h_files(spec: dict, uploads: list[Upload], folder: Path, ctx: dict) -> dict
 
 
 def _h_sample_folders(spec: dict, uploads: list[Upload], folder: Path, ctx: dict) -> dict:
-    """A .zip with one folder per sample of the run, each holding `file` (e.g. quant.sf)."""
+    """A .zip with one folder per sample of the run, each holding `file` (e.g. quant.sf); or, chosen on the server,
+    the folder that holds the sample folders (linked, not copied)."""
     name, fh = uploads[0]
     want = spec.get("file") or "quant.sf"
+    if isinstance(fh, ServerFile) and fh.path.is_dir():
+        found: dict[str, Path] = {}
+        for pattern in (f"*/{want}", f"*/*/{want}"):
+            for f in sorted(fh.path.glob(pattern)):
+                found.setdefault(f.parent.name, f)
+            if found:
+                break
+        if not found:
+            raise ExtraError(f"No <sample>/{want} files in {fh.path.name}. Choose the folder that holds one folder per sample.")
+        missing = [s for s in ctx["samples"] if s not in found]
+        if missing:
+            raise ExtraError(f"No {want} for sample(s) {', '.join(missing)} in {fh.path.name}. Its folders are named "
+                             f"{', '.join(sorted(found))}; they must match the sample names of this analysis.")
+        for s in ctx["samples"]:
+            _save_upload(ServerFile(found[s]), folder / s / want)
+        return {_sets(spec)[0]: str(folder)}
     if not name.lower().endswith(".zip"):
         raise ExtraError(f"Upload {spec.get('label', spec['name'])} as one .zip file with a folder per sample (<sample>/{want}).")
     tmp = _save_upload(fh, folder.parent / f"{spec['name']}_upload.zip")
@@ -317,6 +335,54 @@ HANDLERS: dict[str, tuple[Callable, bool]] = {
     "sample_folders": (_h_sample_folders, False),
     "annotation": (_h_annotation, True),
 }
+
+
+# How each kind of input is chosen on the server: one file, several files or a folder of them, or one folder
+PICK_MODES = {"file": "file", "annotation": "file", "files": "files", "sample_folders": "folder"}
+
+
+def server_uploads(module: str, picks: dict[str, list[str]]) -> dict[str, list[Upload]]:
+    """Choices made in the server file browser ({input name: ["<root>:<path>", ...]}) as handler uploads (ServerFile).
+    A folder chosen for a several-files input stands for the files in it (up to two levels down) that the input keeps;
+    the shallowest copy of each name wins, and two copies at the same depth (two comparisons) are refused."""
+    from . import server_files
+    specs = {i["name"]: i for i in _spec(module)["site"].get("inputs") or []}
+    out: dict[str, list[Upload]] = {}
+    for name, tokens in picks.items():
+        spec = specs.get(name)
+        if spec is None:
+            raise ExtraError(f"This analysis has no input called '{name}'.")
+        label = spec.get("label", name)
+        mode = PICK_MODES.get(spec.get("handler"), "file")
+        for token in tokens:
+            try:
+                p = server_files.resolve(token)
+            except server_files.PickError as e:
+                raise ExtraError(f"{label}: {e}") from e
+            if mode == "files" and p.is_dir():
+                keep = re.compile(spec.get("keep") or ".*")
+                best: dict[str, tuple[int, Path]] = {}
+                for depth, pattern in ((0, "*"), (1, "*/*"), (2, "*/*/*")):        # e.g. rmats/<comparison>/tables/
+                    for f in sorted(p.glob(pattern)):
+                        if f.is_file() and keep.search(f.name) and not any(x.startswith(".") for x in f.relative_to(p).parts):
+                            if f.name in best and best[f.name][0] == depth:
+                                raise ExtraError(f"{label}: {p.name} holds several {f.name} files (e.g. one per comparison). "
+                                                 "Choose the folder of the one you want.")
+                            best.setdefault(f.name, (depth, f))
+                if not best:
+                    raise ExtraError(f"{label}: no usable files in {p.name}. " + (spec.get("none_found") or ""))
+                out.setdefault(name, []).extend((n, ServerFile(f)) for n, (_, f) in sorted(best.items()))
+            elif mode == "folder":
+                if not p.is_dir() and not p.name.lower().endswith(".zip"):
+                    raise ExtraError(f"{label}: choose a folder (one sub-folder per sample) or a .zip, not {p.name}.")
+                out.setdefault(name, []).append((p.name, ServerFile(p)))
+            else:
+                if p.is_dir():
+                    raise ExtraError(f"{label}: choose a file, not the folder {p.name}.")
+                out.setdefault(name, []).append((p.name, ServerFile(p)))
+        if mode in ("file", "folder") and len(out.get(name) or []) > 1:
+            raise ExtraError(f"{label}: choose one {'folder' if mode == 'folder' else 'file'}.")
+    return out
 
 
 # ---- Settings from the form and the run -------------------------------------------------------------

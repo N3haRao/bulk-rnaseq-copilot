@@ -530,7 +530,8 @@ def start_extra_from_fastq(job_id: str, module: str) -> dict:
 
 
 def _auto_fastq_extras(job: dict) -> None:
-    """A finished analysis of FASTQ-made counts: start splicing and isoforms with the job's results."""
+    """A finished analysis of FASTQ-made counts: start the optional analyses marked auto (splicing, isoforms, SUPPA2)
+    with the job's results; MAJIQ is offered but never started by itself."""
     if job.get("status") not in ("success", "success_with_errors") or not job.get("run_dir"):
         return
     fq = fastq.source_for_run(job)
@@ -538,7 +539,7 @@ def _auto_fastq_extras(job: dict) -> None:
         return
     done = extras.all_for(jobs.job_dir(job["id"])) or {}
     for module, info in fastq.extras_available(fq["job_id"], job).items():
-        if info["available"] and module in extras.modules() and not done.get(module):
+        if info["available"] and info.get("auto") and module in extras.modules() and not done.get(module):
             try:
                 _start_extra_from_fastq(job["id"], module)
             except Exception:  # noqa: BLE001 - the user can start it from the tab

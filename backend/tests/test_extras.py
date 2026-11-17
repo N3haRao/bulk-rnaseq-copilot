@@ -118,7 +118,7 @@ def salmon_zip(samples=SAMPLES, ko_from: int = 3) -> bytes:
 def test_splicing_on_a_run(client):
     c, job_dir, run = client
     lst = c.get(f"/api/runs/{job_dir.name}/extras").json()
-    assert set(lst["available"]) == {"splicing", "isoforms"}
+    assert {"splicing", "isoforms"} <= set(lst["available"])     # the code bank may offer more (e.g. suppa, majiq)
     form = lst["forms"]["splicing"]                              # drawn from the code bank's manifest
     assert "KO than in WT" in form["description"] and form["inputs"][0]["name"] == "rmats_tables"
     grp = next(f for f in form["form"] if f["type"] == "run_group")

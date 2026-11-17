@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 
-from . import code_bundle, codebank, comparisons, extras, fastq, geo, report, results, secrets_store, uploads
+from . import code_bundle, codebank, comparisons, extras, fastq, geo, report, results, secrets_store, server_files, uploads
 from .config import settings
 from .jobs import jobs
 from .chat import model as chat_model
@@ -551,22 +551,37 @@ jobs.on_finished.append(_auto_fastq_extras)
 
 @app.post("/api/runs/{job_id}/extras/{module}")
 async def start_extra(job_id: str, module: str, request: Request) -> dict:
-    """Start an optional analysis. Multipart form: one file field per manifest input (by its name), plus the form settings."""
+    """Start an optional analysis. Multipart form: one file field per manifest input (by its name), plus the form settings.
+    Files already on the server: a field "server:<input name>" per choice, valued "<root>:<path>" (see server_files)."""
     run_dir = _run_dir_or_404(job_id)
     if module not in extras.modules():
         raise HTTPException(status_code=404, detail=f"This code bank offers no '{module}' analysis on a run.")
     form = await request.form()
     files: dict[str, list] = {}
     fields: dict[str, str] = {}
+    picks: dict[str, list[str]] = {}
     for key, value in form.multi_items():
         if hasattr(value, "filename") and hasattr(value, "file"):
             if value.filename:
                 files.setdefault(key, []).append((value.filename, value.file))
+        elif key.startswith("server:"):
+            picks.setdefault(key[len("server:"):], []).append(str(value))
         else:
             fields[key] = str(value)
     try:
+        for name, ups in extras.server_uploads(module, picks).items():
+            files.setdefault(name, []).extend(ups)
         return extras.extras.start(module, jobs.load(job_id), jobs.job_dir(job_id), run_dir, files, fields)
     except extras.ExtraError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/api/server-files")
+def server_file_list(root: str | None = None, path: str = "", accept: str = "") -> dict:
+    """Browse the server folders the site may read (data/incoming, the FASTQ jobs, the references, SERVER_FILE_ROOTS)."""
+    try:
+        return server_files.browse(root, path, [a for a in accept.split(",") if a.strip()])
+    except server_files.PickError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
 

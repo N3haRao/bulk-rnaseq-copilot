@@ -212,7 +212,7 @@ class ExecutorAgent:
     # ------------------------------------------------------------------------------
     # 3. Warnings of a finished run
     # ------------------------------------------------------------------------------
-    def explain_run_warnings(self, summary: dict, *, log_dir: Path | None = None) -> dict:
+    def explain_run_warnings(self, summary: dict, *, log_dir: Path | None = None, sample_flags=None) -> dict:
         warnings = [re.sub(r"^\[[^\]]+\]\s*", "", w) for w in summary.get("warnings") or []]
         rec = _Recorder(log_dir, "explain_run_warnings", self.llm.name)
         fallback = {"source": "rules", "model": None, "headline": None,
@@ -247,11 +247,13 @@ class ExecutorAgent:
         by_index = {}
         for it in out.get("items", []):
             text = " ".join(str(it.get(k, "")) for k in ("title", "explanation", "what_to_do"))
-            if isinstance(it.get("index"), int) and 0 <= it["index"] < len(warnings) and numbers_ok(text, facts_text):
+            own = sample_flags.problems(text) if sample_flags is not None else []   # sample findings must be the code bank's
+            if isinstance(it.get("index"), int) and 0 <= it["index"] < len(warnings) and numbers_ok(text, facts_text) and not own:
                 by_index[it["index"]] = {**it, "original": warnings[it["index"]]}
         # any warning the model skipped or got wrong is still shown, in its original words
         items = [by_index.get(i) or {**fallback["items"][i], "original": warnings[i]} for i in range(len(warnings))]
-        headline = out.get("headline") if numbers_ok(out.get("headline", ""), facts_text) else None
+        headline = out.get("headline") if numbers_ok(out.get("headline", ""), facts_text) and not (
+            sample_flags is not None and sample_flags.problems(out.get("headline", ""))) else None
         rec.attempt(user, out, [])
         return rec.finish({"source": "model", "model": self.llm.name, "headline": headline, "items": items})
 

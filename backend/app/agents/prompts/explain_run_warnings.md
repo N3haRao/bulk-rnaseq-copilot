@@ -8,4 +8,4 @@ Write:
   - `what_to_do`: one concrete suggestion (e.g. "Look at the PCA plot: if sample X sits with the other group, check whether it was mislabelled.").
   - `severity`: "info" (worth knowing), "caution" (check before relying on the results) or "serious" (results may be misleading).
 
-Rules: use only sample names, group names and numbers that appear in the facts; do not invent results; answer with the JSON object only.
+Rules: use only sample names, group names and numbers that appear in the facts; do not invent results; explain the warnings the code bank raised, but never add a finding of your own about a sample (outlier, mislabel, quality) that the warnings do not state; answer with the JSON object only.

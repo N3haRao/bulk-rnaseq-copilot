@@ -26,6 +26,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import codebank_review
 from .agent import ReleaseAgent
 from .workspace import Workspace
 
@@ -101,7 +102,7 @@ def _checkout_release(p: Paths, tag: str) -> Path:
 
 # ---- integrate ------------------------------------------------------------------------------------
 def integrate(p: Paths, tag: str, agent_mode: str = "auto", llm=None, final_tests: str | None = None,
-              max_steps: int = 40, out=print) -> dict:
+              max_steps: int = 40, out=print, code_review: str = "auto", review_llm=None) -> dict:
     _check_tag(tag)
     info = tag_info(p, tag)
     state = p.load()
@@ -115,7 +116,7 @@ def integrate(p: Paths, tag: str, agent_mode: str = "auto", llm=None, final_test
     if site.exists():
         git(p.site, "worktree", "remove", "--force", str(site), check=False)
     sdir.mkdir(parents=True, exist_ok=True)
-    for f in ("agent_log.jsonl", "RELEASE_REVIEW.md"):
+    for f in ("agent_log.jsonl", "RELEASE_REVIEW.md", "codebank_review.json"):
         (sdir / f).unlink(missing_ok=True)
     base = git(p.site, "rev-parse", "HEAD")
     git(p.site, "worktree", "add", "-B", f"release/{tag}", str(site), base)
@@ -127,6 +128,25 @@ def integrate(p: Paths, tag: str, agent_mode: str = "auto", llm=None, final_test
     changelog = _changelog((cb_dir / "CHANGELOG.md").read_text() if (cb_dir / "CHANGELOG.md").exists() else "", tag)
     manifest_diff = git(p.codebank, "diff", f"{prev}..{tag}", "--", "manifest/tools.yaml", check=False)[:20000] if prev else "(first release on this server)"
     files_changed = git(p.codebank, "diff", "--stat", f"{prev}..{tag}", check=False)[-4000:] if prev else ""
+
+    def get_llm():
+        nonlocal llm
+        if llm is None:
+            from ..llm.ollama import OllamaClient
+            llm = OllamaClient(model=os.environ.get("RELEASE_AGENT_MODEL", "qwen3-coder:30b"),
+                               url=os.environ.get("OLLAMA_URL", "http://localhost:11434"),
+                               timeout=float(os.environ.get("RELEASE_AGENT_TIMEOUT", "1200")),
+                               num_ctx=int(os.environ.get("RELEASE_AGENT_CONTEXT", "32768")))
+        return llm
+
+    # 1. read what changed in the code bank itself (every release; informs the person approving)
+    rv = None
+    if code_review != "never" and agent_mode != "never":
+        out("  reading the code bank changes ...")
+        rv = codebank_review.review(p.codebank, prev, tag, changelog, review_llm or get_llm(), out=out)
+        (sdir / "codebank_review.json").write_text(json.dumps(rv.to_json(), indent=2, default=str))
+        n = sum(f.reviewed for f in rv.files)
+        out(f"  code bank review: {rv.status}" + (f" ({n} code file(s) read)" if n else "") + (f"; {rv.reason}" if rv.reason else ""))
 
     first = {}
     for c in ("manifest", "tests_quick"):
@@ -142,13 +162,7 @@ def integrate(p: Paths, tag: str, agent_mode: str = "auto", llm=None, final_test
     summaries = []
 
     def run_agent(task: str):
-        nonlocal llm
-        if llm is None:
-            from ..llm.ollama import OllamaClient
-            llm = OllamaClient(model=os.environ.get("RELEASE_AGENT_MODEL", "qwen3-coder:30b"),
-                               url=os.environ.get("OLLAMA_URL", "http://localhost:11434"),
-                               timeout=float(os.environ.get("RELEASE_AGENT_TIMEOUT", "1200")),
-                               num_ctx=int(os.environ.get("RELEASE_AGENT_CONTEXT", "32768")))
+        llm = get_llm()
         out(f"  release agent ({getattr(llm, 'name', 'model')}) working in {site} ...")
         res = ReleaseAgent(llm, ws, max_steps=max_steps, log=sdir / "agent_log.jsonl").run(task)
         out(f"  agent {'finished' if res.finished else 'stopped: ' + (res.stopped_because or '')}; "
@@ -160,7 +174,8 @@ def integrate(p: Paths, tag: str, agent_mode: str = "auto", llm=None, final_test
     if agent_mode == "always" or (agent_mode == "auto" and need):
         if site_requests and all(v["ok"] for v in first.values()):
             out("  the CHANGELOG asks for site changes (For the copilot): the release agent works on them")
-        agent_res = run_agent(_task(tag, info, prev, changelog, manifest_diff, files_changed, first))
+        agent_res = run_agent(_task(tag, info, prev, changelog, manifest_diff, files_changed, first,
+                                    codebank_review.brief(rv) if rv else ""))
 
     # final checks, always by this command (never taken from the agent's word)
     def final_checks() -> dict:
@@ -195,16 +210,17 @@ def integrate(p: Paths, tag: str, agent_mode: str = "auto", llm=None, final_test
     pending = {"tag": tag, "codebank_commit": info["commit"], "released_by": info["released_by"], "staging": str(site),
                "branch": f"release/{tag}", "base": base, "staging_commit": commit, "ready": ready,
                "checks": {k: v["ok"] for k, v in final.items()}, "agent_used": agent_res is not None,
-               "files_changed": sorted(ws.changed), "integrated": _now()}
+               "files_changed": sorted(ws.changed), "integrated": _now(),
+               "code_review": rv.status if rv else "not run"}
     state["pending"] = pending
     p.save(state)
-    review = _review(pending, info, prev, changelog, first, final, agent_res, diffstat, diff)
+    review = _review(pending, info, prev, changelog, first, final, agent_res, diffstat, diff, rv)
     (sdir / "RELEASE_REVIEW.md").write_text(review)
     out(f"\n{'READY FOR APPROVAL' if ready else 'NEEDS ATTENTION'}: read {sdir / 'RELEASE_REVIEW.md'}")
     return pending
 
 
-def _task(tag, info, prev, changelog, manifest_diff, files_changed, first) -> str:
+def _task(tag, info, prev, changelog, manifest_diff, files_changed, first, code_notes="") -> str:
     checks = "\n\n".join(f"### {k}: {'passed' if v['ok'] else 'FAILED'}\n{v['output'][-5000:]}" for k, v in first.items())
     return f"""# Code bank release {tag} (previous live release: {prev or 'none'})
 
@@ -220,6 +236,9 @@ def _task(tag, info, prev, changelog, manifest_diff, files_changed, first) -> st
 ```
 {files_changed}
 ```
+
+## What the code changes do (from the code bank review)
+{code_notes or "(not reviewed)"}
 
 ## Checks of the CURRENT site against the new code bank
 {checks}
@@ -245,14 +264,17 @@ you finish.
 {changelog}"""
 
 
-def _review(pending, info, prev, changelog, first, final, agent_res, diffstat, diff) -> str:
+def _review(pending, info, prev, changelog, first, final, agent_res, diffstat, diff, rv=None) -> str:
     tag = pending["tag"]
     lines = [f"# Review: code bank {tag} on the site", "",
              f"- Released by: **{pending['released_by'] or 'unknown'}** (commit {info['commit'][:10]}); previous live release: {prev or 'none'}",
              f"- Staging copy: `{pending['staging']}` (branch `{pending['branch']}`, commit {pending['staging_commit'][:10]})",
-             f"- Status: **{'ready for approval' if pending['ready'] else 'NOT ready: a check failed (see below)'}**", "",
-             "## What changed in the code bank", "", changelog, "",
-             "## Checks before any change", ""]
+             f"- Status: **{'ready for approval' if pending['ready'] else 'NOT ready: a check failed (see below)'}**",
+             f"- Code bank review: **{pending.get('code_review', 'not run')}**", ""]
+    if rv is not None:
+        lines += [codebank_review.markdown(rv), ""]
+    lines += ["## The CHANGELOG entry (as written by the bioinformatician)", "", changelog, "",
+              "## Checks before any change", ""]
     lines += [f"- {k}: {'passed' if v['ok'] else 'FAILED'}" for k, v in first.items()]
     lines += ["", "## Release agent", ""]
     if agent_res is None:

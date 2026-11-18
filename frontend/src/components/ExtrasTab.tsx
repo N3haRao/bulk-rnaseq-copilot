@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from
 import { api, extraFileUrl, type ExtraAnalysis, type ExtraColumn, type ExtraForm, type FromFastq, type Job } from "../api";
 import { Badge, Markdown, Notice } from "./common";
 import ServerPicker, { pickLabel } from "./ServerPicker";
+import { useNavigate } from "react-router-dom";
 import { fmtNum, fmtP } from "../format";
 
 // Every optional analysis here is drawn from the code bank's manifest (modules.<name>.site): its card,
@@ -242,7 +243,7 @@ function AnalysisView({ jobId, a }: { jobId: string; a: ExtraAnalysis }) {
           <img src={extraFileUrl(jobId, a.module, zoom)} alt="" />
         </div>
       )}
-      {(a.top_tables ?? []).map((t) => <TopTable key={t.title} t={t} />)}
+      {(a.top_tables ?? []).map((t) => <TopTable key={t.title} t={t} jobId={jobId} module={a.module} />)}
       <div className="row" style={{ marginTop: 10 }}>
         <strong>Download:</strong>
         {(a.tables ?? []).map((t) => (
@@ -271,17 +272,24 @@ function cell(c: ExtraColumn, r: Record<string, string>): { text: string; cls: s
   return { text, cls };
 }
 
-function TopTable({ t }: { t: NonNullable<ExtraAnalysis["top_tables"]>[number] }) {
+function TopTable({ t, jobId, module }: { t: NonNullable<ExtraAnalysis["top_tables"]>[number]; jobId: string; module: string }) {
+  const navigate = useNavigate();
+  const igv = t.rows.some((r) => r._locus);
+  const open = (r: Record<string, string>) =>
+    navigate(`/runs/${jobId}/igv?${new URLSearchParams({ module, locus: r._locus, event: r._event ?? "" })}`);
   return (
     <>
       <h3>{t.title}</h3>
+      {igv && <p className="muted small" style={{ marginTop: -6 }}>Click an event to see its reads and junctions in IGV.</p>}
       {t.rows.length ? (
         <div className="table-wrap" style={{ maxHeight: 360 }}>
           <table>
             <thead><tr>{t.columns.map((c) => <th key={c.label} className={c.format && c.format !== "flag" ? "num" : ""}>{c.label}</th>)}</tr></thead>
             <tbody>
               {t.rows.map((r, i) => (
-                <tr key={i}>{t.columns.map((c) => { const x = cell(c, r); return <td key={c.label} className={x.cls}>{x.text}</td>; })}</tr>
+                <tr key={i} className={r._locus ? "clickable" : undefined} title={r._locus ? `Open ${r._locus} in IGV` : undefined}
+                  onClick={r._locus ? () => open(r) : undefined}>
+                  {t.columns.map((c) => { const x = cell(c, r); return <td key={c.label} className={x.cls}>{x.text}</td>; })}</tr>
               ))}
             </tbody>
           </table>

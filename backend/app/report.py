@@ -30,7 +30,8 @@ def build(job: dict, job_dir: Path, run_dir: Path, *, refresh: bool = False) -> 
         narrative = json.loads(narrative_path.read_text())
     else:
         facts, genes = build_facts(run_dir)
-        narrative = ReportAgent().write(facts, genes, log_dir=job_dir / "agent" / "log")
+        from .agents.claims import SampleFlags
+        narrative = ReportAgent().write(facts, genes, log_dir=job_dir / "agent" / "log", sample_flags=SampleFlags.from_run(run_dir))
         narrative["facts"] = facts
         narrative["written"] = datetime.now().isoformat(timespec="seconds")
         narrative_path.write_text(json.dumps(narrative, indent=2, default=str))

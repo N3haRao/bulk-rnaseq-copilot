@@ -208,7 +208,7 @@ class ReportAgent:
                          f"Example {i} answer:\n{json.dumps(ex['narrative'])}")
         return "\n".join(parts)
 
-    def write(self, facts: dict, all_genes: set[str], *, log_dir: Path | None = None) -> dict:
+    def write(self, facts: dict, all_genes: set[str], *, log_dir: Path | None = None, sample_flags=None) -> dict:
         template = template_narrative(facts)
         rec = _Recorder(log_dir, "write_report", self.llm.name)
         facts_text = json.dumps(facts, indent=1, default=str)
@@ -232,7 +232,7 @@ class ReportAgent:
                                "section_sources": {k: "rules" for k in template}, "dropped": [],
                                "fallback_reason": str(e)})
 
-        g = Grounding(facts_text, all_genes, gene_records(facts))
+        g = Grounding(facts_text, all_genes, gene_records(facts), sample_flags=sample_flags)
         sections, sources, dropped = {}, {}, []
         for k in TEXT_SECTIONS:
             text, d = g.filter(str(out.get(k, "")))

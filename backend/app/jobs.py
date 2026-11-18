@@ -187,7 +187,9 @@ class JobManager:
         summary_path = run_dir / "run_summary.json" if run_dir else None
         if not summary_path or not summary_path.exists():
             raise KeyError("This run has no results yet.")
-        result = ExecutorAgent().explain_run_warnings(json.loads(summary_path.read_text()), log_dir=d / "agent" / "log")
+        from .agents.claims import SampleFlags
+        result = ExecutorAgent().explain_run_warnings(json.loads(summary_path.read_text()), log_dir=d / "agent" / "log",
+                                                      sample_flags=SampleFlags.from_run(run_dir))
         if result["source"] == "model":
             cache.parent.mkdir(exist_ok=True)
             cache.write_text(json.dumps(result, indent=2))

@@ -71,6 +71,6 @@ ensure_frontend() {
   fi
   if [ ! -f "$fe/dist/index.html" ] || [ -n "$(find "$fe/src" "$fe/index.html" "$fe/package.json" -newer "$fe/dist/index.html" -print -quit 2>/dev/null)" ]; then
     echo "Building the frontend in $fe ..." >&2
-    (cd "$fe" && npm run build >/dev/null) || { echo "Frontend build FAILED (cd $fe && npm run build)." >&2; return 1; }
+    (cd "$fe" && npm run build > "$fe/build.log" 2>&1) || { tail -30 "$fe/build.log" >&2; echo "Frontend build FAILED (full output: $fe/build.log)." >&2; return 1; }
   fi
 }

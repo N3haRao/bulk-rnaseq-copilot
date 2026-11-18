@@ -66,7 +66,7 @@ else
 fi
 if [ -n "$OPORT" ]; then
   curl -s "http://127.0.0.1:$OPORT/api/tags" | grep -q "\"$RELEASE_AGENT_MODEL\"" || \
-    echo "WARNING: $RELEASE_AGENT_MODEL is not in $COPILOT_HOME/models (containers/ada/pull_model.sh $RELEASE_AGENT_MODEL). If the site needs changes, the review will say the model stopped answering."
+    echo "WARNING: $RELEASE_AGENT_MODEL is not in $COPILOT_HOME/models (containers/ada/pull_model.sh $RELEASE_AGENT_MODEL). The code bank review will say \"Not done\" (read the code changes yourself), and if the site needs changes, that the model stopped answering."
   export OLLAMA_URL=http://127.0.0.1:$OPORT
   # on CPUs one answer can take many minutes
   [ -n "$NV" ] || export RELEASE_AGENT_TIMEOUT=${RELEASE_AGENT_TIMEOUT:-3600}

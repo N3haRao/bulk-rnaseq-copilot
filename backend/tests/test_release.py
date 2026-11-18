@@ -119,6 +119,12 @@ def test_release_without_site_changes(home):
     assert "Live: v0.6.0" in cli.status(home) and "Pending: none" in cli.status(home)
 
 
+REVIEWER = ScriptedLLM(lambda system, user, schema: (
+    {"what_it_does": "Prints the step name.", "changes": [{"what": "New script.", "kind": "other", "lines": "1"}],
+     "earlier_results_change": "no", "changelog": "matches"} if "what_it_does" in schema["properties"]
+    else {"headline": "Adds a genelist module."}))
+
+
 def test_release_that_needs_the_agent(home):
     cli.integrate(home, "v0.6.0", final_tests="tests_quick", out=lambda *_: None)
     cli.approve(home, "v0.6.0", user="alice", out=lambda *_: None)
@@ -138,7 +144,7 @@ def test_release_that_needs_the_agent(home):
         {"thought": "Done.", "action": "finish", "summary": "Added a 'lines' upload handler to extras.py for the genelist module.",
          "manual_review": ["Open a run and check the Gene list score card."]},
     ])
-    pend = cli.integrate(home, "v0.6.1", llm=script, final_tests="tests_quick", out=lambda *_: None)
+    pend = cli.integrate(home, "v0.6.1", llm=script, final_tests="tests_quick", out=lambda *_: None, review_llm=REVIEWER)
     assert pend["agent_used"] and pend["files_changed"] == [ext], pend
     assert pend["ready"], (home.staging("v0.6.1") / "RELEASE_REVIEW.md").read_text()[-3000:]
     log = [json.loads(x) for x in (home.staging("v0.6.1") / "agent_log.jsonl").read_text().splitlines()]
@@ -180,7 +186,7 @@ def test_changelog_request_and_repair_round(home, monkeypatch):
         {"thought": "Fix the strict test.", "action": "finish", "summary": "Made test_x check a subset of the modules."},
     ])
     lines = []
-    pend = cli.integrate(home, "v0.6.1", llm=script, final_tests="tests_quick", out=lines.append)
+    pend = cli.integrate(home, "v0.6.1", llm=script, final_tests="tests_quick", out=lines.append, code_review="never")
     assert pend["ready"] and pend["agent_used"] and calls["tests_quick"] == 3, (pend, lines)
     assert any("For the copilot" in x for x in lines) and any("repair round" in x for x in lines)
     review = (home.staging("v0.6.1") / "RELEASE_REVIEW.md").read_text()
@@ -189,10 +195,11 @@ def test_changelog_request_and_repair_round(home, monkeypatch):
 
 def test_model_that_stops_is_not_approvable(home):
     add_toy_module(home.codebank)
-    pend = cli.integrate(home, "v0.6.1", llm=ScriptedLLM([LLMUnavailable("Ollama is not running")]), final_tests="tests_quick",
-                         out=lambda *_: None)
+    pend = cli.integrate(home, "v0.6.1", llm=ScriptedLLM(lambda *_: (_ for _ in ()).throw(LLMUnavailable("Ollama is not running"))),
+                         final_tests="tests_quick", out=lambda *_: None)
     assert not pend["ready"] and pend["checks"]["manifest"] is False
     review = (home.staging("v0.6.1") / "RELEASE_REVIEW.md").read_text()
+    assert pend["code_review"] == "not_done" and "Not done: the model stopped answering" in review
     assert "model_error" in review and "handler 'lines'" in review
     with pytest.raises(cli.ReleaseError, match="not ready"):
         cli.approve(home, "v0.6.1", user="alice", out=lambda *_: None)
@@ -210,3 +217,56 @@ def test_workspace_limits(tmp_path):
     with pytest.raises(ToolError, match="Unknown check"):
         ws.run_check("rm -rf /")
     assert ws.write_file("backend/app/new.py", "b = 2\n").startswith("Wrote") and ws.changed == {"backend/app/new.py"}
+
+
+def test_codebank_review(home):
+    """Every release: the agent reads each changed code file; the site checks its line numbers, finds changed defaults
+    and files the CHANGELOG does not mention by itself, and the review leads RELEASE_REVIEW.md."""
+    import yaml
+    cb = home.codebank
+    cli.integrate(home, "v0.6.0", final_tests="tests_quick", out=lambda *_: None)
+    cli.approve(home, "v0.6.0", user="alice", out=lambda *_: None)
+    m = yaml.safe_load((cb / "manifest" / "tools.yaml").read_text())
+    mod, prm = next((k, n) for k, v in m["modules"].items() for n, d in (v.get("parameters") or {}).items()
+                    if isinstance(d, dict) and isinstance(d.get("default"), (int, float)) and not isinstance(d.get("default"), bool))
+    old = m["modules"][mod]["parameters"][prm]["default"]
+    m["modules"][mod]["parameters"][prm]["default"] = old + 1
+    (cb / "manifest" / "tools.yaml").write_text(yaml.safe_dump(m, sort_keys=False))
+    script = cb / "scripts" / "03_exploratory.R"
+    lines = script.read_text().splitlines()
+    lines[29] = lines[29] + "  # changed"
+    script.write_text("\n".join(lines) + "\n")
+    (cb / "R" / "new_helper.R").write_text("helper <- function(x) x + 1\n")
+    with open(cb / "CHANGELOG.md", "a") as f:
+        f.write("\n## v0.6.1\n\n- 03_exploratory: clearer outlier messages.\n")
+    sh(cb, "git", "add", "-A")
+    sh(cb, "git", "-c", "user.name=alice", "-c", "user.email=a@x", "commit", "-q", "-m", "v0.6.1")
+    tag(cb, "v0.6.1")
+
+    def answer(system, user, schema):
+        if "what_it_does" not in schema["properties"]:
+            return {"headline": "Outlier messages and a new helper.", "results_may_change": ["none"], "check_by_hand": ["the helper"]}
+        if "## File: scripts/03_exploratory.R" in user:
+            return {"what_it_does": "PCA and outlier flags.", "earlier_results_change": "no", "changelog": "matches",
+                    "changes": [{"what": "Comment added.", "kind": "messages", "lines": "30"},
+                                {"what": "Made-up change.", "kind": "method", "lines": "2-3"}]}
+        return {"what_it_does": "Adds one.", "changes": [{"what": "New helper.", "kind": "other", "lines": "1"}],
+                "earlier_results_change": "no", "changelog": "not_mentioned", "changelog_note": "Not in the entry."}
+    reviewer = ScriptedLLM(answer)
+    pend = cli.integrate(home, "v0.6.1", agent_mode="auto", final_tests="tests_quick", out=lambda *_: None, review_llm=reviewer)
+    assert pend["ready"] and not pend["agent_used"] and pend["code_review"] == "done"
+    assert len(reviewer.calls) == 3                                # two code files + the summary
+    ex_call = next(c["user"] for c in reviewer.calls if "## File: scripts/03_exploratory.R" in c["user"])
+    assert "\n   30  " in ex_call and "```diff" in ex_call             # the new file with line numbers, and the diff
+    rv = json.loads((home.staging("v0.6.1") / "codebank_review.json").read_text())
+    files = {f["path"]: f for f in rv["files"]}
+    ex = files["scripts/03_exploratory.R"]
+    assert [c["verified"] for c in ex["changes"]] == [True, False] and ex["in_changelog"] is True
+    assert files["R/new_helper.R"]["in_changelog"] is False and files["manifest/tools.yaml"]["kind"] == "config"
+    assert {"where": f"manifest: {mod}", "name": prm, "old": old, "new": old + 1} in rv["defaults"]
+    review = (home.staging("v0.6.1") / "RELEASE_REVIEW.md").read_text()
+    assert review.index("read by the release agent") < review.index("## The CHANGELOG entry") < review.index("## Checks before")
+    assert "**In short:** Outlier messages and a new helper." in review
+    assert "`R/new_helper.R` changed but the CHANGELOG does not mention it." in review
+    assert "not verified" in review and f"`{prm}` | {old} | {old + 1}" in review
+    assert "Code changed but no test file did." in review

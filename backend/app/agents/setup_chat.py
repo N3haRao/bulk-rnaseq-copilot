@@ -99,6 +99,7 @@ class SetupChat:
         if violations:
             answer["text"] = guardrails.refusal(violations) + " " + answer["text"]
             answer["guardrail"] = [v.as_dict() for v in violations]
+        self._sample_guardrail(answer, before, st)
         answer["changes"] = describe_changes(before, answer["setup"])
         answer.update(role="assistant", at=_now())
         st["transcript"].append(answer)
@@ -106,6 +107,34 @@ class SetupChat:
         self._save(st)
         rec.finish({k: answer.get(k) for k in ("source", "setup", "changes", "problems")})
         return st
+
+    def _sample_guardrail(self, answer: dict, before: dict, st: dict) -> None:
+        """Before the analysis runs, no sample has been checked by the code bank (02_qc, 03_exploratory). The assistant may
+        not leave a sample out on its own: only samples the user named stay excluded. A reply that calls a sample an
+        outlier or mislabel is labelled as the assistant's reading of the sample table."""
+        from .claims import SampleFlags, unsupported
+        user_text = " ".join(t.get("text", "") for t in st["transcript"] if t["role"] == "user")
+        adv = dict((answer.get("setup") or {}).get("advanced") or {})
+        had = set((before.get("advanced") or {}).get("exclude_samples") or [])
+        ex = list(adv.get("exclude_samples") or [])
+        own = [x for x in ex if x not in had and x not in user_text]
+        notes = []
+        if own:
+            keep = [x for x in ex if x not in own]
+            if keep:
+                adv["exclude_samples"] = keep
+            else:
+                adv.pop("exclude_samples", None)
+            answer["setup"] = {**answer["setup"], "advanced": adv}
+            notes.append(f"The assistant wanted to leave out {', '.join(own)}; that was undone, because only you decide "
+                         "which samples to leave out. The code bank checks every sample (QC and PCA) when the analysis runs.")
+        flags = SampleFlags(samples=set(self._values(self.sample_col)))
+        if unsupported(answer.get("text", ""), flags):
+            notes.append("What the assistant says about individual samples comes from reading the sample table, not from "
+                         "a code bank check; the code bank's QC and PCA checks run with the analysis.")
+        if notes:
+            answer["text"] = (answer.get("text", "") + "\n\nGuardrail: " + " ".join(notes)).strip()
+            answer["sample_guardrail"] = notes
 
     def _ask_model(self, text: str, st: dict, current: dict, violations: list, rec: _Recorder) -> dict:
         facts = self.facts(current, text)

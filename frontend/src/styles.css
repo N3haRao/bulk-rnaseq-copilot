@@ -248,3 +248,18 @@ input[type="color"] { width: 44px; height: 28px; padding: 0 2px; border: 1px sol
 .field-pick { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .field-pick label.field { margin-bottom: 0; }
 .field-help { display: block; color: var(--muted); margin: 3px 0 14px; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--surface-2); }
+.igv-layout { display: flex; gap: 12px; align-items: flex-start; margin-top: 8px; }
+.igv-events { flex: 0 0 210px; max-height: 80vh; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--surface); }
+.igv-event { display: flex; justify-content: space-between; gap: 6px; text-align: left; background: none; border: 1px solid transparent;
+  color: var(--text); padding: 4px 6px; font-weight: 400; border-radius: 6px; }
+.igv-event:hover { background: var(--surface-2); }
+.igv-event.active { border-color: var(--accent); background: var(--surface-2); }
+.igv-host { flex: 1; min-width: 0; max-width: 100%; overflow-x: auto; background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 4px; color: #222; }
+@media (max-width: 760px) { .igv-layout { flex-direction: column; } .igv-host { width: 100%; } .igv-events { flex: none; width: 100%; max-height: 180px; } }
+@media (max-width: 640px) {
+  .topbar { flex-wrap: wrap; padding: 10px 16px; gap: 6px 16px; }
+  .topbar nav { flex-wrap: wrap; gap: 6px 14px; }
+}

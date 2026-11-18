@@ -72,6 +72,9 @@ export default function ChatTab({ job }: { job: Job }) {
         else next.push({ ...item, pending: false });
       } else if (e.type === "error") {
         next.push({ role: "error", text: e.text });
+      } else if (e.type === "guardrail") {
+        if (last?.pending) next[next.length - 1] = { ...last, pending: false };
+        next.push({ role: "guardrail", text: e.text });
       } else if (e.type === "done" && last?.pending) {
         next[next.length - 1] = { ...last, pending: false };
       }
@@ -173,6 +176,7 @@ function Item({ item, jobId, convId, onRerun }: {
 }) {
   if (item.role === "user") return <div className="msg user">{item.text}</div>;
   if (item.role === "error") return <Notice kind="fail">{item.text}</Notice>;
+  if (item.role === "guardrail") return <Notice kind="warning">{item.text}</Notice>;
   if (item.role === "assistant") {
     return <div className="msg assistant md"><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text ?? ""}</ReactMarkdown></div>;
   }
@@ -205,6 +209,7 @@ function Item({ item, jobId, convId, onRerun }: {
       {item.rerun && (
         <div className="rerun-card">
           <strong>Suggested new run:</strong> {item.rerun.reason}
+          {item.rerun.guardrail && <Notice kind="warning">{item.rerun.guardrail}</Notice>}
           <table><tbody>
             {Object.entries(item.rerun.changes).map(([k, v]) => <tr key={k}><th>{k}</th><td>{Array.isArray(v) ? v.join(", ") : String(v)}</td></tr>)}
           </tbody></table>

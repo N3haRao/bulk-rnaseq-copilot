@@ -16,6 +16,7 @@ codebank-releases/v0.6.0/ ...        one read-only checkout per release (git wor
 codebank-live -> codebank-releases/v0.6.0    the release the site uses
 staging/v0.6.1/site/                 the staging copy of the site for a pending release (branch release/v0.6.1)
 staging/v0.6.1/RELEASE_REVIEW.md     what changed, what the agent did, the checks, the full diff
+staging/v0.6.1/codebank_review.json  the code bank review, file by file
 staging/v0.6.1/agent_log.jsonl       every action of the release agent and its result
 release-state.json                   live release, pending release, history (who released, who approved, when)
 models/  data/  secrets.env          models; uploads and runs (private); optional API key
@@ -51,15 +52,21 @@ The release job:
 
 1. Checks out the release into `codebank-releases/v0.6.1`.
 2. Makes a staging copy of the live site on the git branch `release/v0.6.1`.
-3. Runs two checks against the new code bank:
+3. **Reads the code bank changes** (every release, against the live release or else the code bank's previous tag; `backend/app/release/codebank_review.py`):
+   - by code: which files changed, which parameter defaults changed (`config/default_params.yaml` and the manifest), and which changed code files the CHANGELOG never names;
+   - by the model, one code file at a time (its diff, the new file with line numbers, the CHANGELOG entry): what the file does now, each change (method, default, output, fix, ...) with its line numbers, whether earlier results would change if rerun, and whether the CHANGELOG describes it correctly;
+   - by code again: each change the model describes must point at lines that changed in this release, or it is marked *not verified*;
+   - a short headline for the person approving.
+   This informs the review; it does not make a release ready or not ready. Up to `RELEASE_REVIEW_MAX_FILES` (default 30) code files are read; test files and docs are listed but not read. Expect about a minute per file on the A30. If the model is not running, the review says "Not done" and lists the files to read by hand.
+4. Runs two checks against the new code bank:
    - `manifest`: the site can show every module's `site:` block;
    - `tests_quick`: the contract test plus the unit tests.
-4. Starts the release agent (`qwen3-coder:30b` through Ollama, set with `RELEASE_AGENT_MODEL`; limits below) when a check fails,
-   or when the release's CHANGELOG entry has a `### For the copilot` section asking for site changes. `--agent always` /
+5. Starts the release agent (`qwen3-coder:30b` through Ollama, set with `RELEASE_AGENT_MODEL`; limits below) when a check fails,
+   or when the release's CHANGELOG entry has a `### For the copilot` section asking for site changes. The agent gets the code bank review's notes with its task. `--agent always` /
    `--agent never` override this.
-5. Runs the final checks itself, whatever the agent says: `manifest` and the full test suite (`RELEASE_FINAL_TESTS`, default `tests_full`). If the agent changed the frontend, a type check and build are added.
+6. Runs the final checks itself, whatever the agent says: `manifest` and the full test suite (`RELEASE_FINAL_TESTS`, default `tests_full`). If the agent changed the frontend, a type check and build are added.
    If a final check fails, the agent gets one repair round with the failing output, and the final checks run again.
-6. Commits the staging copy and writes `RELEASE_REVIEW.md`.
+7. Commits the staging copy and writes `RELEASE_REVIEW.md`.
 
 The release agent:
 
@@ -73,7 +80,7 @@ The release agent:
 - can never run commands of its own: only four fixed checks (`manifest`, `tests_quick`, `tests_full`, `frontend`);
 - logs every action in `agent_log.jsonl`.
 
-The job log ends with **READY** or **NEEDS ATTENTION** and the path of the review. A release the site already handles takes minutes and needs no model.
+The job log ends with **READY** or **NEEDS ATTENTION** and the path of the review. A release the site already handles needs the model only for the code bank review.
 
 **Speed.** On a GPU, for example fuji's A30 (24 GB, the model fully on the GPU), a release that needs changes takes about 10–30 minutes. On Ada's CPUs it can take hours. `qwen3-coder:30b` is a mixture-of-experts model with about 3B active parameters per token, so it runs on CPUs, just slowly.
 
@@ -86,7 +93,8 @@ $COPILOT_HOME/copilot/ops/release preview v0.6.1      # optional: the staging si
 
 The review shows:
 
-- the CHANGELOG entry;
+- first, **what changed in the code bank**, read by the release agent: a headline, results that may differ if rerun, a "check by hand" list (files the CHANGELOG does not name, described changes that do not match the changed lines, code changed without tests), the defaults that changed, and per code file what it does and what changed;
+- the CHANGELOG entry, as written;
 - the checks before and after the changes;
 - the agent's summary and its "look at by hand" list;
 - a warning if it touched test files;

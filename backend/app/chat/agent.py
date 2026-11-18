@@ -16,6 +16,8 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..agents import claims
+from ..agents.claims import SampleFlags
 from .. import codebank, guardrails
 from ..agents.reporter import build_facts
 from .model import ChatModel, ChatModelError
@@ -129,6 +131,7 @@ class Conversation:
             meta["title"] = text[:80]
             (self.dir / "meta.json").write_text(json.dumps(meta))
         tools = ToolBox(self.workspace, self.run_dir, self.job)
+        before_answer = len(transcript)
         system = self.system()
         json_retries = 0
 
@@ -166,6 +169,13 @@ class Conversation:
                                       "The answer was too long and was cut off. Ask for a smaller step.")
                 return
             if not tool_uses:
+                said = " ".join(t.get("text", "") for t in transcript[before_answer:] if t.get("role") == "assistant")
+                flags = SampleFlags.from_run(self.run_dir)
+                found = claims.unsupported(said, flags)
+                if found:
+                    item = {"role": "guardrail", "text": claims.note(found, flags), "sentences": found, "at": _now()}
+                    transcript.append(item)
+                    yield {"type": "guardrail", "text": item["text"]}
                 self._save("messages.json", messages)
                 self._save("transcript.json", transcript)
                 yield {"type": "done"}

@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 
-from . import code_bundle, codebank, comparisons, extras, fastq, geo, report, results, secrets_store, server_files, uploads
+from . import code_bundle, codebank, comparisons, extras, fastq, geo, igv, report, results, secrets_store, server_files, uploads
 from .config import settings
 from .jobs import jobs
 from .chat import model as chat_model
@@ -574,6 +574,62 @@ async def start_extra(job_id: str, module: str, request: Request) -> dict:
         return extras.extras.start(module, jobs.load(job_id), jobs.job_dir(job_id), run_dir, files, fields)
     except extras.ExtraError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+
+# ---- IGV: the reads behind the splicing results -------------------------------------------------
+class IgvBams(BaseModel):
+    picks: list[str]
+
+
+def _igv(job_id: str):
+    run_dir = _run_dir_or_404(job_id)
+    return jobs.load(job_id), jobs.job_dir(job_id), run_dir
+
+
+@app.get("/api/runs/{job_id}/igv")
+def igv_config(job_id: str) -> dict:
+    """Genome, groups and BAM tracks for the IGV page (starts building the genome index the first time)."""
+    job, jd, rd = _igv(job_id)
+    try:
+        return igv.view_config(job, jd, rd)
+    except igv.IgvError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/runs/{job_id}/igv/bams")
+def igv_choose_bams(job_id: str, body: IgvBams) -> dict:
+    job, jd, rd = _igv(job_id)
+    try:
+        return igv.choose_bams(job, jd, rd, body.picks)
+    except igv.IgvError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/api/runs/{job_id}/igv/file/{key}")
+def igv_file(job_id: str, key: str):
+    """A BAM, .bai, FASTA or .fai registered for this run; range requests supported (igv.js reads pieces)."""
+    _, jd, _ = _igv(job_id)
+    try:
+        p = igv.served_file(jd, key)
+    except KeyError:
+        _not_found("File")
+    if not p.is_file():
+        _not_found("File")
+    return FileResponse(p, media_type="application/octet-stream")
+
+
+@app.get("/api/runs/{job_id}/igv/junctions")
+def igv_junctions(job_id: str, group: str, chr: str, start: float, end: float, min_reads: int = 2) -> list[dict]:
+    job, jd, rd = _igv(job_id)
+    return igv.junctions(job, jd, rd, group, chr, max(0, int(start)), int(end) + 1, min_reads)
+
+
+@app.get("/api/igv/{species}/features")
+def igv_features(species: str, chr: str, start: float, end: float) -> list[dict]:
+    try:
+        return igv.features(species, chr, max(0, int(start)), int(end) + 1)
+    except igv.IgvError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @app.get("/api/server-files")

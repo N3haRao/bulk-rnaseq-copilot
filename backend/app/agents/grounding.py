@@ -52,8 +52,10 @@ class Grounding:
     so a value cannot be moved from one gene to another.
     """
 
-    def __init__(self, facts_text: str, all_genes: set[str], gene_records: dict[str, dict] | None = None) -> None:
+    def __init__(self, facts_text: str, all_genes: set[str], gene_records: dict[str, dict] | None = None,
+                 sample_flags=None) -> None:
         self.facts_text = facts_text
+        self.sample_flags = sample_flags          # claims.SampleFlags: sample findings must be the code bank's
         self.gene_numbers = {g: _numbers(" ".join(str(v) for v in rec.values())) for g, rec in (gene_records or {}).items()}
         general = facts_text
         for g, rec in (gene_records or {}).items():
@@ -66,7 +68,7 @@ class Grounding:
         self.genes = {g for g in all_genes if g and len(g) >= 3 and g.lower() not in COMMON_WORDS}
 
     def problems(self, sentence: str) -> list[str]:
-        out = []
+        out = list(self.sample_flags.problems(sentence)) if self.sample_flags is not None else []
         if not numbers_ok(sentence, self.facts_text):
             out.append("number not in the results")
         for w in WORD.findall(sentence):

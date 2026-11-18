@@ -7,6 +7,7 @@ import Settings from "./pages/Settings";
 import Compare from "./pages/Compare";
 import Fastq from "./pages/Fastq";
 import Comparison from "./pages/Comparison";
+import Igv from "./pages/Igv";
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="/fastq/:jobId" element={<Fastq />} />
           <Route path="/runs" element={<Runs />} />
           <Route path="/runs/:jobId" element={<Run />} />
+          <Route path="/runs/:jobId/igv" element={<Igv />} />
           <Route path="/compare" element={<Compare />} />
           <Route path="/compare/:id" element={<Comparison />} />
           <Route path="/settings" element={<Settings />} />

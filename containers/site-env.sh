@@ -50,6 +50,11 @@ ensure_frontend() {
   local fe=$SITE_DIR/frontend
   # an earlier version linked the whole folder into the (read-only) image: Vite must write node_modules/.vite-temp
   [ -L "$fe/node_modules" ] && [ "$(readlink "$fe/node_modules")" = /opt/app/frontend/node_modules ] && rm "$fe/node_modules"
+  # node_modules records the lock file it was made from; a new frontend package (e.g. igv) makes it again
+  if [ -e "$fe/node_modules" ] && ! cmp -s "$fe/package-lock.json" "$fe/node_modules/.copilot-lock"; then
+    echo "frontend/package-lock.json changed: setting up the frontend packages again ..." >&2
+    rm -rf "$fe/node_modules"
+  fi
   if [ ! -e "$fe/node_modules" ]; then
     if cmp -s "$fe/package-lock.json" /opt/app/frontend/package-lock.json; then
       # the image's packages (same lock file): a writable folder of links to each of them
@@ -59,8 +64,10 @@ ensure_frontend() {
       done
     else
       echo "frontend/package-lock.json differs from the image's; installing packages (needs internet) ..." >&2
-      (cd "$fe" && npm ci --no-audit --no-fund >&2) || { echo "npm ci failed; rebuild the image." >&2; return 1; }
+      (cd "$fe" && npm ci --no-audit --no-fund >&2) || { echo "npm ci failed; rebuild the image (containers/build.sh app)." >&2; return 1; }
     fi
+    cp "$fe/package-lock.json" "$fe/node_modules/.copilot-lock"
+    touch "$fe/package.json"            # rebuild dist with the new packages
   fi
   if [ ! -f "$fe/dist/index.html" ] || [ -n "$(find "$fe/src" "$fe/index.html" "$fe/package.json" -newer "$fe/dist/index.html" -print -quit 2>/dev/null)" ]; then
     echo "Building the frontend in $fe ..." >&2

@@ -408,9 +408,11 @@ function SamplesTab({ jobId, r }: { jobId: string; r: Results }) {
             </table>
           </div>
           {ex.flagged_samples.length > 0 ? (
-            ex.flagged_samples.map((f) => <Notice key={f.sample_id + f.flag} kind="warning"><strong>{f.sample_id}</strong>: {f.message}</Notice>)
+            ex.flagged_samples.map((f) => <Notice key={f.sample_id + f.flag} kind="warning"><strong>{f.sample_id}</strong>: {f.message}
+              <span className="muted small"> (code bank check, step 03_exploratory: outlier_flags.csv)</span></Notice>)
           ) : (
-            <Notice kind="pass">Every sample clusters with its own group; no possible mislabels or outliers.</Notice>
+            <Notice kind="pass">Every sample clusters with its own group; no possible mislabels or outliers.
+              <span className="muted small"> (code bank check, step 03_exploratory)</span></Notice>
           )}
         </section>
       )}

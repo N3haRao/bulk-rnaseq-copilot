@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, codeZipUrl, fileUrl, type AgentWarnings, type Job, type ReportStatus, type Results } from "../api";
 import { Badge, Figures, Markdown, Notice, SourceTag, Stepper, Tabs } from "../components/common";
 import ChatTab from "../components/ChatTab";
@@ -16,7 +16,8 @@ export default function Run() {
   const [job, setJob] = useState<Job | null>(null);
   const [results, setResults] = useState<Results | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<TabId>("overview");
+  const [search] = useSearchParams();
+  const [tab, setTab] = useState<TabId>((search.get("tab") as TabId) || "overview");
   const [report, setReport] = useState<ReportStatus | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);

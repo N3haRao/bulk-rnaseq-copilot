@@ -668,9 +668,17 @@ def overview(d: Path) -> dict:
     out["headline"] = headline(res, sources)
     out["tiles"] = [{"label": t["label"], "value": lookup(sources, t["value"]), "style": t.get("style")} for t in res.get("tiles") or []]
     out["figures"] = [f for f in res.get("figures") or [] if (rd / f["path"]).exists()]
-    out["top_tables"] = [{"title": t.get("title", ""), "columns": t.get("columns") or [], "empty": t.get("empty", "None."),
-                          "rows": _csv_rows(rd / t["path"], int(t.get("rows", 50)), t.get("filter"))}
-                         for t in res.get("top_tables") or []]
+    from .igv import event_span, locus_for
+    out["top_tables"] = []
+    for t in res.get("top_tables") or []:
+        rows = _csv_rows(rd / t["path"], int(t.get("rows", 50)), t.get("filter"))
+        for r in rows:                   # rows with a place in the genome open in IGV (splicing events)
+            loc = locus_for(r)
+            if loc:
+                c, a, b = event_span(r)
+                r["_locus"], r["_event"] = loc, f"{c}:{a}-{b}"
+        out["top_tables"].append({"title": t.get("title", ""), "columns": t.get("columns") or [], "empty": t.get("empty", "None."),
+                                  "rows": rows})
     out["tables"] = [p for p in res.get("tables") or [] if (rd / p).exists()]
     meth = rd / res["methods"] if res.get("methods") else None
     out["methods_md"] = meth.read_text() if meth and meth.exists() else None

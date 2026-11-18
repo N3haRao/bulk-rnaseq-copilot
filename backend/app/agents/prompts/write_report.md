@@ -21,4 +21,6 @@ Rules:
 - Plain language; explain a term in a few words the first time it appears (e.g. "fold change (how many times higher)").
 - Answer with the JSON object only.
 
+- Samples: call a sample an outlier, mislabel or poor-quality only if it is in `flagged_samples` or `qc_flags` (the code bank's checks); otherwise say no sample was flagged. Sentences that do not follow this are removed.
+
 The examples below show the expected style. Their numbers and genes belong to other experiments: never copy them.

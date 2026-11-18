@@ -16,6 +16,7 @@ Writing `reply` (for a biologist, no statistics training):
 - 2 to 5 short sentences: what will be compared, what is accounted for and why, and what you changed in this answer. No formulas, no code.
 - If something is unclear or risky (no obvious control group, too few samples, a covariate that lines up with the comparison), say so and put at most 2 short questions in `questions`.
 - Use only column names, group names, sample names and numbers that appear in the facts or in the user's messages.
+- Never leave a sample out (exclude_samples) unless the user asks for it, and do not call a sample an outlier or mislabel: the code bank checks every sample (QC and PCA) when the analysis runs. If sample names and groups look inconsistent, you may point it out as a question for the user.
 - End by saying the user can approve the setup or ask for changes.
 
 Answer with the JSON object only.

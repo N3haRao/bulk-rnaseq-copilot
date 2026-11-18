@@ -259,8 +259,20 @@ class ToolBox:
             raise ValueError("These settings are not valid: " + " ".join(problems))
         event = {"title": "Suggested a new run", "rerun": {"settings": s.model_dump(), "changes": changes,
                                                           "reason": reason, "upload_id": self.job["upload_id"]}}
+        # leaving samples out is a finding about them: say whether the code bank's checks back it
+        from ..agents.claims import SampleFlags
+        before = set((self.job["settings"].get("advanced") or {}).get("exclude_samples") or [])
+        flags = SampleFlags.from_run(self.run_dir)
+        unflagged = sorted(x for x in set(s.advanced.get("exclude_samples") or []) - before if x not in flags.flags)
+        note = ""
+        if unflagged:
+            event["rerun"]["guardrail"] = (f"The code bank's checks did not flag {', '.join(unflagged)}. Leaving "
+                                           f"{'it' if len(unflagged) == 1 else 'them'} out is the assistant's suggestion, "
+                                           "not a code bank finding. " + flags.what_code_bank_says())
+            note = (" The user is told that the code bank's checks did not flag " + ", ".join(unflagged)
+                    + "; do not call them outliers or mislabels.")
         return ("The proposal is shown to the user with a button to start it. It has not started; do not "
-                "describe its results until the user runs it."), event
+                "describe its results until the user runs it." + note), event
 
 
 def _resolved(run_dir: Path) -> dict:

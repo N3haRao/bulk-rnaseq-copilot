@@ -88,14 +88,14 @@ How it works:
 
 `containers/` has the Apptainer images (the site with R, the code bank and the FASTQ tools; Ollama for the model), `build.sh`, and SLURM scripts for Ada. `containers/ada/site.slurm` runs the site behind an ssh tunnel, and `containers/ada/upstream.slurm` runs the FASTQ steps as a batch job. See [containers/README.md](containers/README.md).
 
-### Optional analyses on a run ("More analyses" tab)
+### Splicing and isoform analyses ("Splicing & isoforms" tab)
 
 Every code-bank module whose manifest entry says `site: {attach_to: run}` is offered on a finished run (code bank v0.6.0+: splicing and isoforms). The manifest's `site` block describes the uploads, the settings the user can change, what is taken from the run, and the results (tiles, headline sentences, figures, top tables, downloads, methods, files for the chat). The site draws the card, the form, the results, the report section, the PowerPoint slide, the chat context and the code .zip from it (`backend/app/extras.py`, `frontend/src/components/ExtrasTab.tsx`), so **a new module, setting, figure or table needs no site code**. The building blocks and every field are in `codebank/docs/ADDING_A_MODULE.md`.
 
 - **Alternative splicing:** upload the rMATS output tables (or a .zip of rMATS's output folder) and say which group was rMATS sample 1. The `splicing/` module finds the significant events (FDR, ΔPSI, read coverage), makes the figures, tests pathways, and sorts genes into splicing only / expression only / both by comparing with this run's gene-level results.
 - **Transcript isoforms:** upload a .zip of Salmon output folders (`<sample>/quant.sf`, named like the run's samples), plus the GTF unless the transcript names include the gene (GENCODE). The `isoforms/` module runs **DEI** (DESeq2 per transcript, with this run's settings) and **DUI** (DEXSeq + stageR; isoform switches).
 
-**IGV for splicing results:** in the rMATS, SUPPA2 and MAJIQ tables, click an event to open it in IGV (igv.js 3.8, bundled with the site; `frontend/src/pages/Igv.tsx`, `backend/app/igv.py`). The page shows the event highlighted, the transcripts, one junction track per group (STAR's `SJ.out.tab` of each sample, summed; arc number and thickness = uniquely mapped reads) and every sample's reads, test group first; the list beside it jumps between events. Everything comes from the server, nothing from igv.org:
+**IGV for splicing results:** in the rMATS, SUPPA2 and MAJIQ tables, click an event to open it in IGV (igv.js 3.8, bundled with the site; `frontend/src/pages/Igv.tsx`, `backend/app/igv.py`). The page shows the event highlighted, the transcripts, one junction track per group (STAR's `SJ.out.tab` of each sample, summed; arc number and thickness = uniquely mapped reads) and every sample's reads, test group first; the list beside it jumps between events. Above IGV, a **sashimi plot** of the event (each sample or group means; coverage, junction arcs labelled with their uniquely mapped reads, transcripts; coverage from `samtools depth`, junctions from `SJ.out.tab`) downloads as SVG, PNG or PDF; **Plot the IGV view** redraws it for the region on screen, and **Save the IGV view** exports IGV itself as SVG (`GET /api/runs/<id>/igv/sashimi.{svg,png,pdf}?locus=`). Everything comes from the server, nothing from igv.org:
 - genome: the reference FASTA in `REFS_DIR/<species>` with a `.fai` index, and the GTF's transcripts indexed per chromosome, both built once into `data/igv/<species>/` (in their own process, about a minute for GENCODE; the page says so meanwhile);
 - reads: the analysis's own BAMs (MAJIQ), else the Start-from-FASTQ job's `star/bams/`, else BAMs chosen with **Choose BAMs on the server** (named `<sample>.bam`, with `.bai`; saved in `data/jobs/<run>/igv.json`). BAMs are streamed in pieces (HTTP range requests), by keys registered for the run, never by a path from the browser.
 
@@ -115,7 +115,7 @@ Analyses run in the background, one at a time; files are under `data/jobs/<run>/
 4. Choose the steps: fastp QC and trimming, read length, STAR, Salmon, tximport gene counts, and rMATS.
 5. The page checks the files, design, reference and disk space before starting. It then runs `later/scripts/run_upstream.R` in the background, one job at a time, using `FASTQ_THREADS` threads.
 6. **Set up the analysis** turns the counts into a dataset (setup chat, checks, DESeq2, report).
-7. When that analysis finishes, the **splicing** (the job's rMATS tables for that comparison) and **isoform** (Salmon, DEI/DUI) analyses start on their own in its **More analyses** tab.
+7. When that analysis finishes, every splicing analysis (rMATS tables for that comparison, SUPPA2, MAJIQ with the reference GFF3) and the isoform analysis (Salmon, DEI/DUI) start on their own, one after another, in its **Splicing & isoforms** tab. An analysis whose tool or file is missing (e.g. MAJIQ not installed) says why on its card. Nothing is uploaded; **Run again** changes the settings only.
 
 Code: `backend/app/fastq.py`, `frontend/src/pages/Fastq.tsx`. Tests: `backend/tests/test_fastq.py`, with a stand-in for the pipeline; the pipeline itself is tested in the code bank.
 
@@ -185,7 +185,7 @@ cd backend && .venv/bin/pytest
 cd frontend && npm run typecheck
 ```
 
-Settings (environment variables): `CODEBANK_DIR` (default `./codebank`), `OMICS_DATA_DIR` (default `./data`), `RSCRIPT`, `MAX_UPLOAD_MB` (default 300), `SERVER_FILE_ROOTS` (extra folders the input browser may show; see More analyses).
+Settings (environment variables): `CODEBANK_DIR` (default `./codebank`), `OMICS_DATA_DIR` (default `./data`), `RSCRIPT`, `MAX_UPLOAD_MB` (default 300), `SERVER_FILE_ROOTS` (extra folders the input browser may show; see Splicing & isoforms).
 
 ## Layout
 

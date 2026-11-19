@@ -112,6 +112,17 @@ def test_release_without_site_changes(home):
     assert "Not needed: the site already works" in review and "ops/release approve v0.6.0" in review
     with pytest.raises(cli.ReleaseError, match="released by alice"):
         cli.approve(home, "v0.6.0", user="bob", out=lambda *_: None)
+    # the site's codebank/ submodule at another commit than the one recorded (a pulled submodule update): not a change
+    sub = home.site / "codebank"
+    shutil.rmtree(sub, ignore_errors=True)
+    sh(home.site, "git", "clone", "-q", str(home.codebank), "codebank")
+    sh(sub, "git", "-c", "user.name=x", "-c", "user.email=x@x", "commit", "-q", "--allow-empty", "-m", "elsewhere")
+    assert " codebank" in sh(home.site, "git", "status", "--porcelain", "--untracked-files=no")
+    readme = home.site / "README.md"
+    readme.write_text(readme.read_text() + "edited on the server\n")        # a real local edit still blocks approval
+    with pytest.raises(cli.ReleaseError, match="uncommitted changes"):
+        cli.approve(home, "v0.6.0", user="alice", out=lambda *_: None)
+    sh(home.site, "git", "checkout", "--", "README.md")
     live = cli.approve(home, "v0.6.0", user="alice", out=lambda *_: None)
     assert live["approved_by"] == "alice"
     assert (home.site / "CODEBANK_RELEASE").read_text().startswith("v0.6.0 ")

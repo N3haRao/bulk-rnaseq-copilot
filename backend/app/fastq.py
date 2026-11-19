@@ -692,11 +692,15 @@ def _rmats_tables(res: Path, s: dict) -> list[Path]:
     return files
 
 
-def _salmon_zip(res: Path) -> io.BytesIO:
+def _salmon_zip(res: Path, check_only: bool = False) -> io.BytesIO:
+    """The Salmon quant.sf files as a zip in memory. With check_only, only checks they are there: zipping them takes
+    seconds per sample, and the Splicing & isoforms page asks which analyses can run each time it loads."""
     quants = sorted((res / "salmon").glob("*/quant.sf"))
     if not quants:
         raise FastqError("No Salmon results in the FASTQ job.")
     buf = io.BytesIO()
+    if check_only:
+        return buf
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for q in quants:
             z.write(q, f"{q.parent.name}/quant.sf")
@@ -704,16 +708,17 @@ def _salmon_zip(res: Path) -> io.BytesIO:
     return buf
 
 
-def extras_inputs(fq_job_id: str, module: str, run_job: dict) -> dict:
+def extras_inputs(fq_job_id: str, module: str, run_job: dict, check_only: bool = False) -> dict:
     """Server-side files for an optional analysis, in the shape the upload handlers take: {input name: [(name, fh)]}.
-    Large files already on the server (BAMs, the reference annotation) are passed as ServerFile: linked, not copied."""
+    Large files already on the server (BAMs, the reference annotation) are passed as ServerFile: linked, not copied.
+    check_only: only find out whether the analysis can run (the Salmon zip is left empty)."""
     from .extras import ServerFile
     res = _job_dir(fq_job_id) / "results"
     s = run_job["settings"]
     if module == "splicing":
         return {"rmats_tables": [(p.name, open(p, "rb")) for p in _rmats_tables(res, s)]}
     if module == "isoforms":
-        return {"quant_zip": [("salmon.zip", _salmon_zip(res))]}
+        return {"quant_zip": [("salmon.zip", _salmon_zip(res, check_only))]}
     if module in ("suppa", "majiq"):
         why = tool_installed(module)
         if why:
@@ -725,7 +730,7 @@ def extras_inputs(fq_job_id: str, module: str, run_job: dict) -> dict:
     if module == "suppa":
         if not ref["gtf"].is_file():
             raise FastqError(f"The reference annotation is missing: {ref['gtf']}.")
-        out = {"quant_zip": [("salmon.zip", _salmon_zip(res))], "gtf": [(ref["gtf"].name, ServerFile(ref["gtf"]))]}
+        out = {"quant_zip": [("salmon.zip", _salmon_zip(res, check_only))], "gtf": [(ref["gtf"].name, ServerFile(ref["gtf"]))]}
         try:
             out["rmats_tables"] = [(p.name, open(p, "rb")) for p in _rmats_tables(res, s)]   # optional: SUPPA2 vs rMATS
         except FastqError:
@@ -756,7 +761,7 @@ def extras_available(fq_job_id: str, run_job: dict) -> dict:
     out = {}
     for m in FASTQ_EXTRAS:
         try:
-            ins = extras_inputs(fq_job_id, m, run_job)
+            ins = extras_inputs(fq_job_id, m, run_job, check_only=True)
             for lst in ins.values():
                 for _, fh in lst:
                     fh.close()

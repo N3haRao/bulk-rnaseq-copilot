@@ -653,7 +653,7 @@ def source_for_run(job: dict) -> dict | None:
 # Optional analyses the FASTQ results can feed, and which of them start by themselves after the analysis.
 # MAJIQ runs for hours under an academic licence: offered, never started automatically.
 FASTQ_EXTRAS = ("splicing", "isoforms", "suppa", "majiq")
-AUTO_START = ("splicing", "isoforms", "suppa")
+AUTO_START = ("splicing", "isoforms", "suppa", "majiq")   # every one whose inputs and tools are there
 
 
 def tool_installed(module: str) -> str | None:

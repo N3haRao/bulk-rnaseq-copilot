@@ -154,3 +154,41 @@ def test_splicing_rows_carry_their_igv_locus(env):
     from app import extras
     row = extras.overview(ed)["top_tables"][0]["rows"][0]
     assert row["_locus"] == "chr1:1-10619" and row["_event"] == "chr1:1001-8400"
+
+
+def fake_coverage(bam, chrom, start, end, nbins):
+    exons = [(a + 1, b) for a, b in EXONS]
+    w = (end - start + 1) / nbins
+    return [30.0 if any(a <= start + (i + 0.5) * w <= b for a, b in exons) else 0.0 for i in range(nbins)]
+
+
+@pytest.mark.parametrize("fmt,magic", [("svg", b"<?xml"), ("png", b"\x89PNG"), ("pdf", b"%PDF")])
+def test_sashimi_plot_exports(env, monkeypatch, fmt, magic):
+    monkeypatch.setattr(igv, "coverage", fake_coverage)
+    igv.prepare_reference("human", wait=True)
+    for mode in ("sample", "group"):
+        data = igv.sashimi(env["job"], env["jd"], env["run"], "chr1:500-8900", mode, 5, fmt, "chr1:1001-8400", "DEMO1 SE")
+        assert data.startswith(magic) and len(data) > 1000
+    if fmt == "svg":
+        svg = igv.sashimi(env["job"], env["jd"], env["run"], "chr1:500-8900", "sample", 5, "svg").decode()
+        assert "KO · s3" in svg and "WT · s0" in svg and "DEMO1 (T1)" in svg      # rows per sample, transcripts below
+
+
+def test_sashimi_rejects_bad_requests(env, monkeypatch):
+    monkeypatch.setattr(igv, "coverage", fake_coverage)
+    for locus, msg in (("chr1:5000-100", "after its start"), ("chr1:1-5000000", "Zoom in"), ("nonsense", "not a region")):
+        with pytest.raises(igv.IgvError, match=msg):
+            igv.sashimi(env["job"], env["jd"], env["run"], locus)
+    with pytest.raises(igv.IgvError, match="svg, png or pdf"):
+        igv.sashimi(env["job"], env["jd"], env["run"], "chr1:1-100", fmt="gif")
+    from app.main import app
+    with TestClient(app) as c:
+        r = c.get(f"/api/runs/{JOB}/igv/sashimi.png", params={"locus": "chr1:500-8900", "download": True, "title": "DEMO1 SE"})
+        assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+        assert r.headers["content-disposition"].startswith('attachment; filename="sashimi_DEMO1_SE')
+        assert c.get(f"/api/runs/{JOB}/igv/sashimi.svg", params={"locus": "x"}).status_code == 422
+
+
+def test_every_splicing_analysis_starts_after_a_fastq_run():
+    from app import fastq
+    assert set(fastq.AUTO_START) == {"splicing", "isoforms", "suppa", "majiq"} == set(fastq.FASTQ_EXTRAS)

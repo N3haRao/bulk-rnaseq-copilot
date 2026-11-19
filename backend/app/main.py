@@ -4,13 +4,14 @@ Flow: upload (or example) -> check (step 01) -> setup -> run (steps 1-7) -> resu
 """
 
 import json
+import re
 import shutil
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 
@@ -503,7 +504,7 @@ def list_extras(job_id: str) -> dict:
                            "modules": fastq.extras_available(fq["job_id"], job)} if fq else None}
 
 
-def _start_extra_from_fastq(job_id: str, module: str) -> dict:
+def _start_extra_from_fastq(job_id: str, module: str, fields: dict | None = None) -> dict:
     run_dir = _run_dir_or_404(job_id)
     job = jobs.load(job_id)
     fq = fastq.source_for_run(job)
@@ -511,27 +512,31 @@ def _start_extra_from_fastq(job_id: str, module: str) -> dict:
         raise HTTPException(status_code=422, detail="This analysis was not made from FASTQ files on the server.")
     files = fastq.extras_inputs(fq["job_id"], module, job)
     try:
-        return extras.extras.start(module, job, jobs.job_dir(job_id), run_dir, files, {})
+        return extras.extras.start(module, job, jobs.job_dir(job_id), run_dir, files, {k: str(v) for k, v in (fields or {}).items()})
     finally:
         for lst in files.values():
             for _, fh in lst:
                 fh.close()
 
 
+class ExtraSettings(BaseModel):
+    settings: dict = {}
+
+
 @app.post("/api/runs/{job_id}/extras/{module}/from-fastq")
-def start_extra_from_fastq(job_id: str, module: str) -> dict:
-    """Start an optional analysis with the rMATS tables / Salmon results of the FASTQ job (default settings)."""
+def start_extra_from_fastq(job_id: str, module: str, body: ExtraSettings | None = None) -> dict:
+    """Start an analysis with the FASTQ job's files (BAMs, rMATS tables, Salmon results); body {"settings": {...}} optional."""
     if module not in extras.modules():
         raise HTTPException(status_code=404, detail=f"This code bank offers no '{module}' analysis on a run.")
     try:
-        return _start_extra_from_fastq(job_id, module)
+        return _start_extra_from_fastq(job_id, module, body.settings if body else None)
     except (fastq.FastqError, extras.ExtraError) as e:
         raise HTTPException(status_code=422, detail=str(e))
 
 
 def _auto_fastq_extras(job: dict) -> None:
-    """A finished analysis of FASTQ-made counts: start the optional analyses marked auto (splicing, isoforms, SUPPA2)
-    with the job's results; MAJIQ is offered but never started by itself."""
+    """A finished analysis of FASTQ-made counts: start every splicing / isoform analysis whose inputs and tools are on the
+    server (rMATS tables, Salmon, SUPPA2, MAJIQ), with the job's results; they run one after another."""
     if job.get("status") not in ("success", "success_with_errors") or not job.get("run_dir"):
         return
     fq = fastq.source_for_run(job)
@@ -622,6 +627,22 @@ def igv_file(job_id: str, key: str):
 def igv_junctions(job_id: str, group: str, chr: str, start: float, end: float, min_reads: int = 2) -> list[dict]:
     job, jd, rd = _igv(job_id)
     return igv.junctions(job, jd, rd, group, chr, max(0, int(start)), int(end) + 1, min_reads)
+
+
+@app.get("/api/runs/{job_id}/igv/sashimi.{fmt}")
+def igv_sashimi(job_id: str, fmt: str, locus: str, mode: str = "sample", min_reads: int = 5, event: str | None = None,
+                title: str | None = None, download: bool = False):
+    """A sashimi plot of the region (svg, png or pdf), from the BAMs' coverage and STAR's junction counts."""
+    job, jd, rd = _igv(job_id)
+    try:
+        data = igv.sashimi(job, jd, rd, locus, mode if mode in ("sample", "group") else "sample", max(1, min_reads), fmt, event,
+                           (title or "")[:120] or None)
+    except igv.IgvError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    media = {"svg": "image/svg+xml", "png": "image/png", "pdf": "application/pdf"}[fmt]
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"sashimi_{title or locus}")[:80] + f".{fmt}"
+    return Response(data, media_type=media,
+                    headers={"Content-Disposition": f'{"attachment" if download else "inline"}; filename="{name}"'})
 
 
 @app.get("/api/igv/{species}/features")

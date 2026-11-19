@@ -107,7 +107,10 @@ MSG
 ENVFILE=()
 [ -f "$COPILOT_HOME/secrets.env" ] && ENVFILE=(--env-file "$COPILOT_HOME/secrets.env")
 # /tmp from $COPILOT_HOME/tmp: with --containall the container's own /tmp is a few MB in memory
-apptainer run --containall --cleanenv --bind "$COPILOT_HOME,$COPILOT_HOME/tmp:/tmp" ${ENVFILE[@]+"${ENVFILE[@]}"} \
+# the site's own site-env.sh over the image's copy: images built before it was read from copilot/ still get fixes
+BINDS="$COPILOT_HOME,$COPILOT_HOME/tmp:/tmp"
+[ -f "$COPILOT_HOME/copilot/containers/site-env.sh" ] && BINDS="$BINDS,$COPILOT_HOME/copilot/containers/site-env.sh:/opt/app/site-env.sh"
+apptainer run --containall --cleanenv --bind "$BINDS" ${ENVFILE[@]+"${ENVFILE[@]}"} \
   --env "COPILOT_HOME=$COPILOT_HOME,OMICS_DATA_DIR=$COPILOT_HOME/data,PORT=$PORT,HOST=127.0.0.1$OLLAMA_ENV" \
   ${HTTPS_PROXY:+--env HTTPS_PROXY=$HTTPS_PROXY} \
   "$APP"

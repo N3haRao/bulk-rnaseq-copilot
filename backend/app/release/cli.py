@@ -305,6 +305,12 @@ def _review(pending, info, prev, changelog, first, final, agent_res, diffstat, d
 
 
 # ---- approve / rollback / status ---------------------------------------------------------------------
+def _site_changed(site: Path) -> str:
+    """Uncommitted changes to the live site's tracked files. Its codebank/ submodule is left out: the site runs the
+    code bank from codebank-live, and after pulling a submodule update the folder is often still at the old commit."""
+    return git(site, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all")
+
+
 def approve(p: Paths, tag: str, user: str | None = None, override: str | None = None, out=print) -> dict:
     state = p.load()
     pend = state.get("pending")
@@ -319,7 +325,7 @@ def approve(p: Paths, tag: str, user: str | None = None, override: str | None = 
     head = git(Path(pend["staging"]), "rev-parse", "HEAD")
     if head != pend["staging_commit"]:
         raise ReleaseError("The staging copy changed after the review was written. Run integrate again.")
-    if git(p.site, "status", "--porcelain", "--untracked-files=no"):
+    if _site_changed(p.site):
         raise ReleaseError(f"The live site folder {p.site} has uncommitted changes; commit or remove them first.")
     previous = git(p.site, "rev-parse", "HEAD")
     r = subprocess.run(["git", "-C", str(p.site), "merge", "--ff-only", pend["branch"]], capture_output=True, text=True)
@@ -365,7 +371,7 @@ def rollback(p: Paths, yes: bool = False, user: str | None = None, out=print) ->
         raise ReleaseError("Nothing to roll back to.")
     if not yes:
         raise ReleaseError(f"This puts the site back to {live.get('previous_tag') or 'the version before ' + live['tag']}. Add --yes.")
-    if git(p.site, "status", "--porcelain", "--untracked-files=no"):
+    if _site_changed(p.site):
         raise ReleaseError(f"The live site folder {p.site} has uncommitted changes.")
     git(p.site, "reset", "-q", "--hard", live["previous_copilot_commit"])
     if live.get("previous_tag"):

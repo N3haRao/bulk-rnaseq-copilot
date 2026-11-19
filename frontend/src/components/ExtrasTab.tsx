@@ -59,14 +59,16 @@ export default function ExtrasTab({ job }: { job: Job }) {
   return (
     <>
       <p className="muted">
-        Optional analyses for the same comparison (<strong>{s.test_level}</strong> vs <strong>{s.reference_level}</strong>
-        {s.covariates.length > 0 && <>, accounting for {s.covariates.join(", ")}</>}), run with the code bank's tested modules. They need
-        extra input files made from the sequencing reads; when they finish, they are added to the report, the PowerPoint, the
-        code download and new chats.
+        Splicing (rMATS, SUPPA2, MAJIQ) and isoform analyses of the same comparison (<strong>{s.test_level}</strong> vs <strong>{s.reference_level}</strong>
+        {s.covariates.length > 0 && <>, accounting for {s.covariates.join(", ")}</>}), with the code bank's tested modules. When they
+        finish, they are added to the report, the PowerPoint, the code download and new chats. Click an event in a table to see it in IGV.
       </p>
-      {fromFastq && (
-        <Notice kind="info">These counts were made from FASTQ files on the server ({fromFastq.folder}). The analyses below can use that job's
-          rMATS tables and Salmon results directly; they start on their own when the analysis finishes.</Notice>
+      {fromFastq ? (
+        <Notice kind="info">Made from FASTQ files on the server ({fromFastq.folder}): every analysis below runs on its own after the
+          differential expression, from that job's alignments, rMATS tables and Salmon results. Nothing to upload.</Notice>
+      ) : (
+        <Notice kind="warning">These analyses need the sequencing reads, and this dataset is a count table. Start from the FASTQ files
+          (From FASTQ) and they run with the analysis; or give your own rMATS / Salmon / BAM files under each analysis.</Notice>
       )}
       {Object.values(forms).map((f) => <ModuleCard key={f.module} job={job} form={f} a={analyses[f.module] ?? null} onStarted={started}
         fastq={fromFastq?.modules[f.module] ?? null} />)}
@@ -90,14 +92,16 @@ function ModuleCard({ job, form, a, onStarted, fastq }: { job: Job; form: ExtraF
   const [showForm, setShowForm] = useState(false);
   const [picks, setPicks] = useState<Record<string, string[]>>({});
   const [picking, setPicking] = useState<string | null>(null);
-  const missing = form.inputs.some((i) => i.required && !(files[i.name]?.length) && !(picks[i.name]?.length));
+  const fromFq = !!fastq;               // a FASTQ-made run: the server's files, no uploads
+  const missing = !fromFq && form.inputs.some((i) => i.required && !(files[i.name]?.length) && !(picks[i.name]?.length));
   const anyUpload = Object.values(files).some((f) => f.length);
 
   async function submit(ev: FormEvent) {
     ev.preventDefault();
     setBusy(true); setErr(null);
     try {
-      onStarted(await api.startExtra(job.id, form.module, files, values, picks));
+      onStarted(fromFq ? await api.startExtraFromFastq(job.id, form.module, values)
+        : await api.startExtra(job.id, form.module, files, values, picks));
       setPicks({});
       setShowForm(false);
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
@@ -119,15 +123,21 @@ function ModuleCard({ job, form, a, onStarted, fastq }: { job: Job; form: ExtraF
         {a && !running && !showForm && <button className="secondary" onClick={() => setShowForm(true)}>Run again</button>}
       </div>
       <p className="muted small">{inline(form.description)}</p>
-      {(!a || showForm) && !running && fastq && (
+      {!a && !running && fastq && !showForm && (
         fastq.available
-          ? <p><button type="button" onClick={fromFastq} disabled={busy}>{busy ? <><span className="spinner" /> Starting…</> : "Run with the FASTQ results"}</button>
-            <span className="muted small"> default settings; or upload files, choose them on the server, and change settings below</span></p>
-          : <p className="muted small">The FASTQ results cannot be used here: {fastq.why}</p>
+          ? <p><button type="button" onClick={fromFastq} disabled={busy}>{busy ? <><span className="spinner" /> Starting…</> : "Run now"}</button>
+            <span className="muted small"> with the default settings (or <button type="button" className="link" onClick={() => setShowForm(true)}>change them</button>)</span></p>
+          : <Notice kind="warning">Not run: {fastq.why}</Notice>
       )}
-      {(!a || showForm) && !running && (
+      {!a && !running && !fastq && !showForm && (
+        <p><button type="button" className="secondary" onClick={() => setShowForm(true)}>Use your own files</button>
+          <span className="muted small"> (output of rMATS, Salmon or STAR made elsewhere)</span></p>
+      )}
+      {err && !showForm && <Notice kind="fail">{err}</Notice>}
+      {showForm && !running && (
         <form onSubmit={submit}>
-          {form.inputs.map((i) => (
+          {fromFq && <p className="muted small">Uses the FASTQ job's files; change the settings and run.</p>}
+          {!fromFq && form.inputs.map((i) => (
             <div key={i.name}>
               <div className="field-pick">
                 <label className="field">
@@ -170,8 +180,8 @@ function ModuleCard({ job, form, a, onStarted, fastq }: { job: Job; form: ExtraF
           )}
           {err && <Notice kind="fail">{err}</Notice>}
           <div className="row">
-            <button type="submit" disabled={busy || missing}>{busy ? <><span className="spinner" /> {anyUpload ? "Uploading…" : "Starting…"}</> : `Run ${form.title.toLowerCase()}`}</button>
-            {a && <button type="button" className="link" onClick={() => setShowForm(false)}>Cancel</button>}
+            <button type="submit" disabled={busy || missing || (fromFq && !fastq?.available)}>{busy ? <><span className="spinner" /> {anyUpload ? "Uploading…" : "Starting…"}</> : `Run ${form.title.toLowerCase()}`}</button>
+            <button type="button" className="link" onClick={() => setShowForm(false)}>Cancel</button>
           </div>
         </form>
       )}

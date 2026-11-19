@@ -349,7 +349,7 @@ function FastqProgress({ jobId }: { jobId: string }) {
         <section className="card">
           <h2>Next: the analysis</h2>
           <p>The counts table and sample table are ready ({job.comparisons?.length ? `rMATS: ${job.comparisons.join(", ")}` : "no rMATS"}).
-            Set up the analysis as usual; when it finishes, the splicing and isoform analyses start on their own in its <strong>More analyses</strong> tab.</p>
+            Set up the analysis as usual; when it finishes, the splicing analyses (rMATS, SUPPA2, MAJIQ) and the isoform analysis run on their own in its <strong>Splicing &amp; isoforms</strong> tab.</p>
           <button onClick={toAnalysis} disabled={busy}>{busy ? <><span className="spinner" /> Preparing…</> : job.upload_id ? "Open the analysis setup" : "Set up the analysis"}</button>
         </section>
       )}

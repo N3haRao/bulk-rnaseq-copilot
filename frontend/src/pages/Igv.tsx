@@ -9,7 +9,8 @@ import { fmtNum } from "../format";
 // splice junctions per group (STAR's counts, summed; arc thickness = reads). Opened from a row of a results table;
 // the event list on the side jumps between events without reloading the tracks.
 
-type Browser = { search: (locus: string) => Promise<unknown>; clearROIs?: () => void; loadROI?: (r: unknown) => Promise<void> };
+type Browser = { search: (locus: string) => Promise<unknown>; clearROIs?: () => void; loadROI?: (r: unknown) => Promise<void>;
+  currentLoci: () => string[] | string; toSVG: () => string };
 type Row = Record<string, string>;
 const GROUP_COLOURS = { test: "#c0392b", reference: "#1f6fb2" } as const;
 
@@ -29,6 +30,12 @@ export default function Igv() {
   const [err, setErr] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const [reload, setReload] = useState(0);
+  const [sashimiLocus, setSashimiLocus] = useState<string>(locus);
+  const [sashimiMode, setSashimiMode] = useState<"sample" | "group">("sample");
+  const [minReads, setMinReads] = useState(5);
+  const [sashimiErr, setSashimiErr] = useState<string | null>(null);
+  const [sashimiLoading, setSashimiLoading] = useState(true);
+  useEffect(() => { setSashimiLocus(locus); }, [locus]);
   const div = useRef<HTMLDivElement>(null);
   const browser = useRef<Browser | null>(null);
   const igvMod = useRef<{ removeBrowser: (b: unknown) => void } | null>(null);
@@ -109,6 +116,26 @@ export default function Igv() {
   const label = (r: Row) => `${r.gene_symbol || r.gene_name || r.gene_id || "event"} ${r.event_type || r.lsv_type || ""}`.trim();
   const dpsi = (r: Row) => r.delta_psi ?? r.dpsi;
 
+  const sashimiTitle = current ? `${label(current)}${dpsi(current) ? ` (dPSI ${fmtNum(Number(dpsi(current)), 2)})` : ""}` : "";
+  const sashimiUrl = (fmt: string, download = false) => `/api/runs/${jobId}/igv/sashimi.${fmt}?${new URLSearchParams({
+    locus: sashimiLocus, mode: sashimiMode, min_reads: String(minReads), event: event ?? "", title: sashimiTitle,
+    ...(download ? { download: "true" } : {}) })}`;
+  useEffect(() => { setSashimiLoading(true); setSashimiErr(null); }, [sashimiLocus, sashimiMode, minReads]);
+  function sashimiOfView() {
+    const loci = browser.current?.currentLoci();
+    const l = Array.isArray(loci) ? loci[0] : loci;
+    if (l) setSashimiLocus(l.replace(/,/g, ""));
+  }
+  function saveIgvSvg() {
+    const svg = browser.current?.toSVG();
+    if (!svg) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+    a.download = `igv_${(sashimiTitle || locus).replace(/[^A-Za-z0-9._-]+/g, "_")}.svg`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
   async function chooseBams(tokens: string[]) {
     setPicking(false); setErr(null);
     try { await api.igvChooseBams(jobId, tokens); setReload((n) => n + 1); } catch (e) { setErr((e as Error).message); }
@@ -148,6 +175,38 @@ export default function Igv() {
         <p className="muted small">Reads: {cfg.bam_source}. <button type="button" className="link" onClick={() => setPicking(!picking)}>Use other BAMs</button></p>
       )}
       {picking && <ServerPicker mode="files" accept={[".bam"]} onPick={chooseBams} onClose={() => setPicking(false)} />}
+      {cfg && cfg.reference.ready && cfg.groups.some((g) => g.tracks.length) && sashimiLocus && (
+        <section className="card sashimi">
+          <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+            <strong>Sashimi plot</strong>
+            <span className="muted small">{sashimiLocus}</span>
+            <span className="spacer" />
+            <label className="small">Show{" "}
+              <select value={sashimiMode} onChange={(e) => setSashimiMode(e.target.value as "sample" | "group")} style={{ width: "auto" }}>
+                <option value="sample">each sample</option><option value="group">group means</option>
+              </select></label>
+            <label className="small">Junctions with at least{" "}
+              <input type="number" min={1} value={minReads} style={{ width: 64 }}
+                onChange={(e) => setMinReads(Math.max(1, Number(e.target.value) || 1))} /> reads</label>
+            <button type="button" className="secondary" onClick={sashimiOfView} title="Use the region shown in IGV below">Plot the IGV view</button>
+          </div>
+          {sashimiErr && <Notice kind="fail">{sashimiErr}</Notice>}
+          {sashimiLoading && !sashimiErr && <p className="muted small"><span className="spinner" /> Drawing the sashimi plot (reads the coverage of every BAM)…</p>}
+          <img key={sashimiUrl("svg")} src={sashimiUrl("svg")} alt={`Sashimi plot of ${sashimiLocus}`}
+            style={{ width: "100%", display: sashimiErr ? "none" : "block", background: "#fff" }}
+            onLoad={() => setSashimiLoading(false)}
+            onError={() => { setSashimiLoading(false); fetch(sashimiUrl("svg")).then((r) => r.json()).then((j) => setSashimiErr(j.detail ?? "The plot failed."))
+              .catch(() => setSashimiErr("The plot failed.")); }} />
+          <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
+            <strong className="small">Download:</strong>
+            <a className="button secondary" href={sashimiUrl("svg", true)}>SVG</a>
+            <a className="button secondary" href={sashimiUrl("png", true)}>PNG</a>
+            <a className="button secondary" href={sashimiUrl("pdf", true)}>PDF</a>
+            <span className="spacer" />
+            <button type="button" className="secondary" onClick={saveIgvSvg}>Save the IGV view (SVG)</button>
+          </div>
+        </section>
+      )}
       <div className="igv-layout">
         {rows.length > 0 && (
           <aside className="igv-events">

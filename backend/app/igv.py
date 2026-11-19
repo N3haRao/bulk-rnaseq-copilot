@@ -540,9 +540,12 @@ def sashimi(job: dict, job_dir: Path, run_dir: Path, locus: str, mode: str = "sa
 
     n = len(rows)
     tx_h = 0.32 * max(1, len(tx)) + 0.3
-    fig = plt.figure(figsize=(10, 1.25 * n + tx_h + 0.8))
+    # a fixed layout (no "tight" bounding box): every plot has the same width and margins, whatever is drawn
+    height = 1.25 * n + tx_h + 1.4
+    fig = plt.figure(figsize=(10, height))
     hr = [1.25] * n + [tx_h]
-    gs = fig.add_gridspec(n + 1, 1, height_ratios=hr, hspace=0.12)
+    gs = fig.add_gridspec(n + 1, 1, height_ratios=hr, hspace=0.12, left=0.075, right=0.79,
+                          top=1 - 0.75 / height, bottom=0.55 / height)
     ev = None
     if event:
         try:
@@ -560,18 +563,32 @@ def sashimi(job: dict, job_dir: Path, run_dir: Path, locus: str, mode: str = "sa
         def depth_at(pos):
             i = min(nbins - 1, max(0, int((pos - start) / (end - start + 1) * nbins)))
             return cov[i]
+        span = end - start
+        labels = []                              # (x, y, text, reads): placed afterwards, biggest first
         for i, ((a, b), v) in enumerate(kept):
             below = i % 2 == 1                   # alternate above / below, as in sashimi plots
-            ya, yb = depth_at(a), depth_at(b + 1)
+            ya = depth_at(a) if a >= start else 0.0          # an end outside the region starts at 0
+            yb = depth_at(b + 1) if b <= end else 0.0
             h = ymax * (0.35 + 0.35 * (v / vmax))
             mid_y = (-h if below else max(ya, yb) + h)
             y0, y1 = (0, 0) if below else (ya, yb)
             path = MPath([(a, y0), ((a + b) / 2, mid_y), (b, y1)], [MPath.MOVETO, MPath.CURVE3, MPath.CURVE3])
             lw = 0.6 + 2.4 * (v / vmax)
-            ax.add_patch(PathPatch(path, facecolor="none", edgecolor=colour, lw=lw, clip_on=False))
-            lab = f"{v:.0f}" if v >= 10 or float(v).is_integer() else f"{v:.1f}"
-            ax.text((a + b) / 2, (mid_y / 2 if below else (max(ya, yb) + mid_y) / 2) + (0 if below else 0), lab,
-                    ha="center", va="center", fontsize=7.5, color="#222",
+            partial = a < start or b > end          # continues outside the view: dashed
+            ax.add_patch(PathPatch(path, facecolor="none", edgecolor=colour, lw=lw, clip_on=True,   # stays in the region
+                                   linestyle=(0, (4, 2)) if partial else "-", alpha=0.75 if partial else 1))
+            # label on the visible part of the arc: x(t) is linear on this curve, so t follows from x
+            xc = min(max((a + b) / 2, start + 0.03 * span), end - 0.03 * span)
+            t = min(1.0, max(0.0, (xc - a) / max(1, b - a)))
+            yc = (1 - t) ** 2 * y0 + 2 * t * (1 - t) * mid_y + t ** 2 * y1
+            labels.append((xc, yc, f"{v:.0f}" if v >= 10 or float(v).is_integer() else f"{v:.1f}", v))
+        placed: list[tuple[float, float]] = []
+        for xc, yc, lab, _v in sorted(labels, key=lambda x: -x[3]):
+            # skip a label that would sit on top of a bigger one (crowded regions stay readable)
+            if any(abs(xc - px) < 0.035 * span and abs(yc - py) < 0.16 * ymax * 2.6 for px, py in placed):
+                continue
+            placed.append((xc, yc))
+            ax.text(xc, yc, lab, ha="center", va="center", fontsize=7.5, color="#222", clip_on=True,
                     bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.85))
         ax.set_xlim(start, end)
         ax.set_ylim(-ymax * 0.75, ymax * 1.85)
@@ -595,7 +612,9 @@ def sashimi(job: dict, job_dir: Path, run_dir: Path, locus: str, mode: str = "sa
         for e in t["exons"]:
             if e["end"] >= start and e["start"] <= end:
                 ax.add_patch(Rectangle((e["start"], y - 0.3), e["end"] - e["start"], 0.6, color="#333"))
-        ax.text(end, y, f"  {t['name']} ({t['id']}) {t['strand']}", fontsize=7, va="center", ha="left", clip_on=False)
+        name = f"{t['name']} ({t['id']})"
+        ax.text(end, y, f"  {name[:34] + '…' if len(name) > 35 else name} {t['strand']}", fontsize=7, va="center", ha="left",
+                clip_on=False)
     if not tx:
         ax.text(0.5, 0.5, "(no annotated transcripts here)", transform=ax.transAxes, ha="center", fontsize=8, color="#777")
     if ev and ev[0] == chrom:
@@ -609,6 +628,7 @@ def sashimi(job: dict, job_dir: Path, run_dir: Path, locus: str, mode: str = "sa
     ax.tick_params(axis="x", labelsize=7.5)
     ax.set_xlabel(f"{chrom} ({cfg['reference']['label']})", fontsize=8)
     buf = io.BytesIO()
-    fig.savefig(buf, format=fmt, dpi=200 if fmt == "png" else None, bbox_inches="tight")
+    fig.text(0.075, 0.12 / height, "Dashed arcs: junctions that continue outside this region.", fontsize=7, color="#666")
+    fig.savefig(buf, format=fmt, dpi=200 if fmt == "png" else None)
     plt.close(fig)
     return buf.getvalue()

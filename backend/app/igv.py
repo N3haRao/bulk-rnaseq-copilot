@@ -437,3 +437,178 @@ def junctions(job: dict, job_dir: Path, run_dir: Path, group: str, chrom: str, s
 if __name__ == "__main__":          # python -m app.igv <fasta> <gtf> <fai out> <transcripts dir out>
     import sys
     _build(*sys.argv[1:5])
+
+
+# ---- sashimi plots (exportable): coverage + junction arcs with read counts + transcripts ----------------
+MAX_SASHIMI_BP = 1_000_000
+LOCUS = re.compile(r"^([^:\s]+):(\d[\d,]*)-(\d[\d,]*)$")
+COLOURS = {"test": "#c0392b", "reference": "#1f6fb2"}
+
+
+def parse_locus(locus: str) -> tuple[str, int, int]:
+    m = LOCUS.match((locus or "").strip())
+    if not m:
+        raise IgvError(f"'{locus}' is not a region like chr1:1000-2000.")
+    a, b = int(m.group(2).replace(",", "")), int(m.group(3).replace(",", ""))
+    if b <= a:
+        raise IgvError("The region's end must be after its start.")
+    if b - a > MAX_SASHIMI_BP:
+        raise IgvError(f"Zoom in: a sashimi plot covers at most {MAX_SASHIMI_BP // 1000} kb.")
+    return m.group(1), a, b
+
+
+def samtools() -> str:
+    import os
+    import shutil
+    for c in (os.environ.get("SAMTOOLS"), shutil.which("samtools"), "/opt/conda/envs/tools/bin/samtools"):
+        if c and Path(c).exists():
+            return c
+    raise IgvError("samtools was not found (set SAMTOOLS); it is needed to read the coverage for sashimi plots.")
+
+
+def coverage(bam: Path, chrom: str, start: int, end: int, nbins: int) -> list[float]:
+    """Mean read depth in `nbins` equal bins of [start, end] (1-based, inclusive), from samtools depth."""
+    import subprocess
+    p = subprocess.run([samtools(), "depth", "-a", "-Q", "0", "-r", f"{chrom}:{start}-{end}", str(bam)],
+                       capture_output=True, text=True, timeout=300)
+    if p.returncode != 0:
+        raise IgvError(f"samtools depth failed for {bam.name}: {p.stderr.strip()[:300]}")
+    width = (end - start + 1) / nbins
+    sums, counts = [0.0] * nbins, [0] * nbins
+    for line in p.stdout.splitlines():
+        c = line.split("\t")
+        if len(c) < 3:
+            continue
+        i = min(nbins - 1, int((int(c[1]) - start) / width))
+        if i >= 0:
+            sums[i] += int(c[2])
+            counts[i] += 1
+    return [s / n if n else 0.0 for s, n in zip(sums, counts)]
+
+
+def _sample_junctions(sj: Path | None, chrom: str, start: int, end: int) -> dict[tuple[int, int], int]:
+    if sj is None:
+        return {}
+    out: dict[tuple[int, int], int] = {}
+    for a, b, _strand, _motif, _annot, uniq, _multi in _sj_rows(sj, chrom):
+        if b >= start and a <= end and uniq:
+            out[(a, b)] = out.get((a, b), 0) + uniq
+    return out
+
+
+def sashimi(job: dict, job_dir: Path, run_dir: Path, locus: str, mode: str = "sample", min_reads: int = 5,
+            fmt: str = "svg", event: str | None = None, title: str | None = None) -> bytes:
+    """A sashimi plot of the region: one row per sample (or per group, averaged), coverage as a filled area, splice
+    junctions as arcs labelled with their uniquely mapped reads, the event shaded, and the transcripts below."""
+    import io
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import PathPatch, Rectangle
+    from matplotlib.path import Path as MPath
+
+    if fmt not in ("svg", "png", "pdf"):
+        raise IgvError("Format must be svg, png or pdf.")
+    chrom, start, end = parse_locus(locus)
+    cfg = view_config(job, job_dir, run_dir)
+    bams, _ = bam_sources(job, job_dir, run_dir)
+    nbins = 600
+    xs = [start + (i + 0.5) * (end - start + 1) / nbins for i in range(nbins)]
+    rows = []                                   # (label, colour, coverage, {(a, b): reads})
+    for g in cfg["groups"]:
+        members = [t["sample"] for t in g["tracks"]]
+        per = [(x, coverage(bams[x], chrom, start, end, nbins), _sample_junctions(_sj_for(bams[x], x), chrom, start, end))
+               for x in members]
+        if not per:
+            continue
+        if mode == "group":
+            cov = [sum(p[1][i] for p in per) / len(per) for i in range(nbins)]
+            keys = set().union(*(p[2] for p in per))
+            jn = {k: sum(p[2].get(k, 0) for p in per) / len(per) for k in keys}
+            rows.append((f"{g['name']} (mean of {len(per)})", COLOURS[g["role"]], cov, jn))
+        else:
+            rows += [(f"{g['name']} · {x}", COLOURS[g["role"]], c, j) for x, c, j in per]
+    if not rows:
+        raise IgvError("No BAM files for this analysis, so there is nothing to plot. Choose BAMs on the IGV page.")
+    tx = []
+    try:
+        tx = features(cfg["species"], chrom, start, end)
+    except IgvError:
+        pass
+    tx = sorted(tx, key=lambda t: (t["attributes"].get("tag") != "basic", t["start"]))[:8]
+
+    n = len(rows)
+    tx_h = 0.32 * max(1, len(tx)) + 0.3
+    fig = plt.figure(figsize=(10, 1.25 * n + tx_h + 0.8))
+    hr = [1.25] * n + [tx_h]
+    gs = fig.add_gridspec(n + 1, 1, height_ratios=hr, hspace=0.12)
+    ev = None
+    if event:
+        try:
+            ev = parse_locus(event)
+        except IgvError:
+            ev = None
+    for r, (label, colour, cov, jn) in enumerate(rows):
+        ax = fig.add_subplot(gs[r])
+        top = max(cov) if cov else 0
+        ymax = max(top, 1.0)
+        ax.fill_between(xs, cov, step="mid", color=colour, alpha=0.75, linewidth=0)
+        kept = sorted(((k, v) for k, v in jn.items() if v >= min_reads), key=lambda kv: kv[0])
+        vmax = max([v for _, v in kept] or [1])
+
+        def depth_at(pos):
+            i = min(nbins - 1, max(0, int((pos - start) / (end - start + 1) * nbins)))
+            return cov[i]
+        for i, ((a, b), v) in enumerate(kept):
+            below = i % 2 == 1                   # alternate above / below, as in sashimi plots
+            ya, yb = depth_at(a), depth_at(b + 1)
+            h = ymax * (0.35 + 0.35 * (v / vmax))
+            mid_y = (-h if below else max(ya, yb) + h)
+            y0, y1 = (0, 0) if below else (ya, yb)
+            path = MPath([(a, y0), ((a + b) / 2, mid_y), (b, y1)], [MPath.MOVETO, MPath.CURVE3, MPath.CURVE3])
+            lw = 0.6 + 2.4 * (v / vmax)
+            ax.add_patch(PathPatch(path, facecolor="none", edgecolor=colour, lw=lw, clip_on=False))
+            lab = f"{v:.0f}" if v >= 10 or float(v).is_integer() else f"{v:.1f}"
+            ax.text((a + b) / 2, (mid_y / 2 if below else (max(ya, yb) + mid_y) / 2) + (0 if below else 0), lab,
+                    ha="center", va="center", fontsize=7.5, color="#222",
+                    bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.85))
+        ax.set_xlim(start, end)
+        ax.set_ylim(-ymax * 0.75, ymax * 1.85)
+        ax.set_yticks([0, round(top)] if top >= 1 else [0])
+        ax.tick_params(axis="y", labelsize=7)
+        ax.set_xticks([])
+        for sp in ("top", "right", "bottom"):
+            ax.spines[sp].set_visible(False)
+        ax.axhline(0, color="#999", lw=0.5)
+        ax.text(0.005, 0.97, label, transform=ax.transAxes, fontsize=8.5, va="top", color=colour, fontweight="bold")
+        if r == 0:
+            unit = "mean reads per sample" if mode == "group" else "reads"
+            ax.set_title((title + "\n" if title else "") + f"{chrom}:{start:,}-{end:,}   ·   arcs: junction {unit} "
+                         f"(uniquely mapped, ≥ {min_reads})", fontsize=10, pad=10)
+        if ev and ev[0] == chrom:
+            ax.axvspan(ev[1], ev[2], color="#ffc400", alpha=0.12, lw=0)
+    ax = fig.add_subplot(gs[n])
+    for i, t in enumerate(tx):
+        y = -i
+        ax.plot([max(t["start"], start), min(t["end"], end)], [y, y], color="#444", lw=0.8)
+        for e in t["exons"]:
+            if e["end"] >= start and e["start"] <= end:
+                ax.add_patch(Rectangle((e["start"], y - 0.3), e["end"] - e["start"], 0.6, color="#333"))
+        ax.text(end, y, f"  {t['name']} ({t['id']}) {t['strand']}", fontsize=7, va="center", ha="left", clip_on=False)
+    if not tx:
+        ax.text(0.5, 0.5, "(no annotated transcripts here)", transform=ax.transAxes, ha="center", fontsize=8, color="#777")
+    if ev and ev[0] == chrom:
+        ax.axvspan(ev[1], ev[2], color="#ffc400", alpha=0.12, lw=0)
+    ax.set_xlim(start, end)
+    ax.set_ylim(-max(1, len(tx)) + 0.4, 0.7)
+    ax.set_yticks([])
+    for sp in ("top", "right", "left"):
+        ax.spines[sp].set_visible(False)
+    ax.ticklabel_format(axis="x", style="plain", useOffset=False)
+    ax.tick_params(axis="x", labelsize=7.5)
+    ax.set_xlabel(f"{chrom} ({cfg['reference']['label']})", fontsize=8)
+    buf = io.BytesIO()
+    fig.savefig(buf, format=fmt, dpi=200 if fmt == "png" else None, bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue()

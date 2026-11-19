@@ -226,7 +226,7 @@ def test_suppa_and_majiq_from_fastq_results(env, monkeypatch, tmp_path):
         (res / f"{s}.bam").write_text("bam " + s)
         (res / f"{s}.bam.bai").write_text("bai")
     av = fastq.extras_available(job["id"], run_job)
-    assert av["majiq"]["available"] and not av["majiq"]["auto"]
+    assert av["majiq"]["available"] and av["majiq"]["auto"]          # every analysis now starts on its own
 
     ins = fastq.extras_inputs(job["id"], "suppa", run_job)
     assert set(ins) == {"quant_zip", "gtf", "rmats_tables"}

@@ -33,5 +33,7 @@ for d in /project /scratch /work; do [ -d "$d" ] && BIND="$BIND,$d"; done
 BIND="$BIND,$COPILOT_DIR"     # the live code bank release ($COPILOT_HOME/codebank-live), when there is one
 # a real /tmp for STAR, Salmon and rMATS (with --containall the container's own /tmp is a few MB in memory)
 mkdir -p "$COPILOT_DIR/tmp" && BIND="$BIND,$COPILOT_DIR/tmp:/tmp"
+# the site's own site-env.sh over the image's copy (older images read only theirs)
+[ -f "$COPILOT_DIR/copilot/containers/site-env.sh" ] && BIND="$BIND,$COPILOT_DIR/copilot/containers/site-env.sh:/opt/app/site-env.sh"
 echo "Config: $CONFIG   threads in the config should match --cpus-per-task (${SLURM_CPUS_PER_TASK:-?})"
 apptainer run --containall --cleanenv --bind "$BIND" --env COPILOT_HOME=$COPILOT_DIR --pwd "$(dirname "$CONFIG")" --app upstream "$APP" --config "$CONFIG"

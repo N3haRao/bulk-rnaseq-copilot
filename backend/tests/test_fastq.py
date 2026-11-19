@@ -168,8 +168,14 @@ def test_job_to_dataset_and_extras_inputs(env):
     assert fastq.fastq_jobs.to_dataset(job["id"])["id"] == rec["id"]      # once
     run_job = {"upload_id": rec["id"], "settings": {"reference_level": "WT", "test_level": "KO"}}
     assert fastq.source_for_run(run_job)["job_id"] == job["id"]
-    av = fastq.extras_available(job["id"], run_job)
-    assert av["splicing"]["available"] and av["isoforms"]["available"]
+    zips = []
+    real_zip = zipfile.ZipFile
+    zipfile.ZipFile = lambda *a, **k: zips.append(a) or real_zip(*a, **k)
+    try:
+        av = fastq.extras_available(job["id"], run_job)      # asked on every page load: must not zip the Salmon results
+    finally:
+        zipfile.ZipFile = real_zip
+    assert av["splicing"]["available"] and av["isoforms"]["available"] and not zips
     ins = fastq.extras_inputs(job["id"], "splicing", run_job)
     assert sorted(n for n, _ in ins["rmats_tables"]) == ["SE.MATS.JC.txt", "SE.MATS.JCEC.txt"]
     z = zipfile.ZipFile(fastq.extras_inputs(job["id"], "isoforms", run_job)["quant_zip"][0][1])

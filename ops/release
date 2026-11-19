@@ -38,6 +38,8 @@ if [ -z "$PY" ] && [ -z "$IN_CONTAINER" ] && [ -f "$SIF" ]; then
     case "$CB/" in "$(readlink -f "$HOME_DIR")"/*) ;; *) BINDS="$BINDS,$CB" ;; esac
   fi
   case "$(readlink -f "$SITE")/" in "$(readlink -f "$HOME_DIR")"/*) ;; *) BINDS="$BINDS,$SITE" ;; esac
+  # this site's own site-env.sh over the image's copy (older images read only theirs)
+  [ -f "$SITE/containers/site-env.sh" ] && BINDS="$BINDS,$(readlink -f "$SITE/containers/site-env.sh"):/opt/app/site-env.sh"
   ENVS="COPILOT_HOME=$HOME_DIR,USER=${USER:-$(id -un)}"
   for v in COPILOT_CODEBANK_REPO OLLAMA_URL RELEASE_AGENT_MODEL RELEASE_AGENT_TIMEOUT RELEASE_AGENT_CONTEXT \
            RELEASE_FINAL_TESTS PREVIEW_PORT; do

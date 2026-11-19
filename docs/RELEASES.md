@@ -113,7 +113,7 @@ Approval is refused if:
 - the release is not ready (a check failed);
 - you are not the person who made the release. An admin can use `--override "reason"`, and the reason is recorded;
 - the staging copy changed after the review was written;
-- the live site folder has uncommitted changes.
+- the live site folder has uncommitted changes to tracked files. Its `codebank/` submodule does not count: the site runs the code bank from `codebank-live`, so a submodule left at an older commit after a `git pull` does not block approval.
 
 On approval:
 

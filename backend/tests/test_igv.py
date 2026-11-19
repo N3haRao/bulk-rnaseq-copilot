@@ -192,3 +192,21 @@ def test_sashimi_rejects_bad_requests(env, monkeypatch):
 def test_every_splicing_analysis_starts_after_a_fastq_run():
     from app import fastq
     assert set(fastq.AUTO_START) == {"splicing", "isoforms", "suppa", "majiq"} == set(fastq.FASTQ_EXTRAS)
+
+
+def test_sashimi_size_does_not_depend_on_junctions_outside_the_region(env, monkeypatch):
+    """A junction reaching far outside the region used to widen the figure (unclipped arcs + a tight bounding box)."""
+    import struct
+    monkeypatch.setattr(igv, "coverage", fake_coverage)
+    for i in range(6):
+        sj = env["res"] / "star" / "star" / f"s{i}" / "SJ.out.tab"
+        sj.write_text(sj.read_text() + "chr1\t3000\t9000000\t1\t1\t1\t50\t0\t30\nchr1\t-5000\t3500\t1\t1\t1\t40\t0\t30\n".replace("-5000", "1"))
+
+    igv.prepare_reference("human", wait=True)
+
+    def size(locus):
+        png = igv.sashimi(env["job"], env["jd"], env["run"], locus, "sample", 5, "png")
+        return struct.unpack(">II", png[16:24])
+    w1, h1 = size("chr1:500-8900")
+    w2, h2 = size("chr1:3900-4300")
+    assert w1 == w2 == 2000 and h1 == h2            # 10 in at 200 dpi, same height for the same samples

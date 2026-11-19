@@ -13,7 +13,7 @@ export default function App() {
   return (
     <>
       <header className="topbar">
-        <Link to="/" className="brand">RNA-seq Analysis</Link>
+        <Link to="/" className="brand">BulkRNAseq Copilot</Link>
         <nav>
           <NavLink to="/" end>New analysis</NavLink>
           <NavLink to="/fastq">From FASTQ</NavLink>
